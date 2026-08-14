@@ -1,2 +1,16 @@
+# python virtualenvs (rebuildable — see README-Gestures.md / README-Live2D.md)
 /.venv
+/gesture-venv
+__pycache__/
+
+# logs & crash dumps
 *.log
+
+# runtime state (toggled live by gesture_ctl.sh hands on|off)
+scripts/.hands_off
+
+# empty stray file
+/source
+
+# MediaPipe models — 8MB binaries, fetched by scripts/get_models.sh
+/models
