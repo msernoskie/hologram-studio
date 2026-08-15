@@ -57,6 +57,15 @@
   .hint { color:var(--dim); font-size:12px; margin-top:8px; }
   .busy { opacity:.5; pointer-events:none; }
   .row2 { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px; }
+  section.wide { grid-column: 1 / -1; }
+  select, textarea { background:var(--bg); color:var(--text); border:1px solid var(--line);
+    border-radius:6px; padding:5px 8px; font-size:14px; font-family:inherit; }
+  label { color:var(--dim); font-size:13px; display:inline-flex; gap:6px; align-items:center; }
+  .card { display:flex; align-items:center; gap:8px; padding:6px 10px; margin:4px 0;
+          background:var(--panel2); border-radius:8px; }
+  .card .name { font-weight:600; }
+  .card .preview { flex:1; color:var(--dim); font-size:12px; white-space:nowrap;
+                   overflow:hidden; text-overflow:ellipsis; }
 </style>
 </head>
 <body>
@@ -118,6 +127,52 @@
     <pre id="export" style="display:none"></pre>
     <div class="hint">An AI can trigger these:
       <code>POST /api/sequence/play {"name": …}</code> — labels tell it when.</div>
+  </section>
+
+  <!-- ============ AI BACKEND ============ -->
+  <section class="wide">
+    <h2>AI backend</h2>
+    <div class="row2">
+      <label>provider
+        <select id="aiProvider"></select></label>
+      <label>base_url
+        <input type="text" id="aiBase" style="width:280px"></label>
+      <label>model
+        <input type="text" id="aiModel" style="width:180px"></label>
+      <label>api key
+        <input type="text" id="aiKey" style="width:140px" placeholder="(unchanged)"></label>
+    </div>
+    <div class="row2">
+      <button id="saveBackend" class="primary">Save backend</button>
+      <button id="restartBackend">Restart backend now</button>
+      <span class="hint" id="aiCur"></span>
+    </div>
+    <div class="hint">Points Open-LLM-VTuber's LLM at a server — e.g. the oobabooga VM
+      (<code>openai_compatible_llm</code>) or local Ollama (<code>ollama_llm</code>).
+      Changes land in <code>conf.yaml</code> and need a backend restart (button above —
+      also reloads the hologram, ~15&nbsp;s).</div>
+  </section>
+
+  <!-- ============ CHARACTER ============ -->
+  <section class="wide">
+    <h2>Character</h2>
+    <div class="row2">
+      <label>name <input type="text" id="chName" style="width:140px"></label>
+      <label>calls you <input type="text" id="chHuman" style="width:140px"></label>
+    </div>
+    <textarea id="chPersona" rows="7" style="width:100%; margin-top:8px"
+      placeholder="persona / system prompt — who is she?"></textarea>
+    <div class="row2">
+      <button id="saveChar" class="primary">Save character</button>
+      <input type="text" id="cardName" placeholder="card name" style="width:140px">
+      <button id="saveCard">Save as card</button>
+    </div>
+    <h2 style="margin-top:14px">Character cards</h2>
+    <div id="cards"></div>
+    <div class="hint">Cards are saved presets (name + persona). <b>Apply</b> loads one into
+      the fields and writes it to <code>conf.yaml</code>; restart the backend to make it live.
+      Emotion tags from the labels panel are appended to the prompt automatically by
+      Open-LLM-VTuber — the persona doesn't need to list them.</div>
   </section>
 </main>
 
@@ -260,7 +315,78 @@ $("showExport").onclick = async () => {
   } else el.style.display = "none";
 };
 
-refresh();
+// ---------- AI backend & character ----------
+let AI = {};
+async function refreshAI() {
+  AI = await api("/api/ai");
+  const sel = $("aiProvider");
+  sel.innerHTML = Object.keys(AI.providers).map(p =>
+    `<option ${p===AI.llm_provider?"selected":""}>${p}</option>`).join("");
+  fillProvider(AI.llm_provider);
+  $("aiCur").textContent = `active: ${AI.llm_provider}`;
+  $("chName").value = AI.character_name;
+  $("chHuman").value = AI.human_name;
+  $("chPersona").value = AI.persona_prompt;
+  $("cards").innerHTML = (AI.cards||[]).map(c => `
+    <div class="card">
+      <span class="name">${c.name}</span>
+      <span class="preview">${(c.persona_prompt||"").slice(0,110)}</span>
+      <button class="small" data-apply="${c.name}">apply</button>
+      <button class="small danger" data-cdel="${c.name}">✕</button>
+    </div>`).join("") || `<div class="hint">No cards saved yet.</div>`;
+  document.querySelectorAll("[data-apply]").forEach(b => b.onclick = async () => {
+    const c = AI.cards.find(x => x.name === b.dataset.apply);
+    $("chName").value = c.character_name || $("chName").value;
+    $("chPersona").value = c.persona_prompt || "";
+    await saveCharacter();
+    toast(`card "${c.name}" applied — restart backend to make it live`);
+  });
+  document.querySelectorAll("[data-cdel]").forEach(b => b.onclick = async () => {
+    await api("/api/cards/delete", {name: b.dataset.cdel}); refreshAI();
+  });
+}
+function fillProvider(p) {
+  const cfg = AI.providers[p] || {};
+  $("aiBase").value  = cfg.base_url || "";
+  $("aiModel").value = cfg.model || "";
+  $("aiKey").value   = "";
+  $("aiKey").placeholder = cfg.llm_api_key !== undefined ? "(unchanged)" : "(n/a)";
+}
+$("aiProvider").onchange = () => fillProvider($("aiProvider").value);
+$("saveBackend").onclick = async () => {
+  const body = {provider: $("aiProvider").value,
+                base_url: $("aiBase").value.trim(),
+                model: $("aiModel").value.trim()};
+  if ($("aiKey").value.trim()) body.llm_api_key = $("aiKey").value.trim();
+  const r = await api("/api/ai/backend", body);
+  toast(r.ok ? "backend saved — restart to apply" : (r.error||"failed"), r.ok);
+  refreshAI();
+};
+$("restartBackend").onclick = async () => {
+  toast("restarting backend…");
+  const r = await api("/api/ai/restart", {});
+  toast(r.ok ? "backend restarted" : "restart failed", r.ok);
+};
+async function saveCharacter() {
+  const r = await api("/api/ai/character", {
+    character_name: $("chName").value.trim(),
+    human_name: $("chHuman").value.trim(),
+    persona_prompt: $("chPersona").value });
+  return r.ok;
+}
+$("saveChar").onclick = async () => {
+  toast((await saveCharacter()) ? "character saved — restart backend to apply" : "failed");
+};
+$("saveCard").onclick = async () => {
+  const name = $("cardName").value.trim();
+  if (!name) return toast("card needs a name", false);
+  await api("/api/cards/save", {card: {name,
+    character_name: $("chName").value.trim(),
+    persona_prompt: $("chPersona").value }});
+  $("cardName").value = ""; toast(`card "${name}" saved`); refreshAI();
+};
+
+refresh(); refreshAI();
 setInterval(refresh, 10000);
 </script>
 </body>

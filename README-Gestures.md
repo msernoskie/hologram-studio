@@ -292,3 +292,20 @@ POST /api/switch           {"model": "jane_doe"}
 So an LLM with tool access can `GET /api/export` to learn what's available (the labels are
 the semantic hints) and then fire emotes or sequences over HTTP. Sequence/label storage is
 `webui/library.json`, per model, committed to git.
+
+### AI backend & character (web UI)
+
+Two more panels at the bottom of the studio:
+
+- **AI backend** — pick the LLM provider (`openai_compatible_llm` = the oobabooga VM,
+  `ollama_llm` = local Ollama, plus claude/openai/gemini/etc.), set its `base_url`, `model`
+  and API key. Writes to `conf.yaml` surgically (comments survive). **Restart backend now**
+  applies it (clean backend restart + hologram reload).
+- **Character** — the character's name, what she calls you, and the persona/system prompt.
+  **Character cards** are named presets stored in `webui/library.json`: fill the fields,
+  "Save as card", then **apply** any card later to swap personalities in one click
+  (+ backend restart to make it live). The emotion-tag instructions are injected by
+  Open-LLM-VTuber automatically — personas don't need to mention them.
+
+API: `GET /api/ai`, `POST /api/ai/backend`, `POST /api/ai/character`, `POST /api/ai/restart`,
+`POST /api/cards/save|delete`.

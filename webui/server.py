@@ -94,6 +94,107 @@ def fire_emote(names):
     return run_script(os.path.join(SCRIPTS, "emote.sh"), *names, timeout=20)
 
 
+# ---- conf.yaml surgery ------------------------------------------------------
+# Targeted line edits (same approach as switch_model.sh) — a YAML library
+# round-trip would destroy the file's extensive comments.
+CONF = os.path.join(OLV, "conf.yaml")
+
+
+def read_conf():
+    with open(CONF, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def write_conf(text):
+    with _lock:
+        tmp = CONF + ".tmp"
+        with open(tmp, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, CONF)
+
+
+def _q(v):
+    """Sanitise a value for a single-quoted YAML scalar."""
+    return str(v).replace("\n", " ").replace("'", "''")
+
+
+def _set_quoted(text, pattern, value):
+    """Replace the quoted value on the first line matching pattern.
+    pattern must have groups (prefix)(old)(suffix-quote); comments survive."""
+    import re
+    return re.sub(pattern, lambda m: m.group(1) + _q(value) + m.group(3),
+                  text, count=1, flags=re.M)
+
+
+def provider_blocks(text):
+    """{provider: {field: value}} for each 6-space stanza with LLM fields."""
+    import re
+    out, cur = {}, None
+    for line in text.splitlines():
+        m = re.match(r"^      (\w+):\s*(#.*)?$", line)
+        if m:
+            cur = m.group(1)
+            continue
+        if cur and re.match(r"^\S|^  \S|^    \S", line):   # dedent past 6 spaces
+            cur = None
+        f = re.match(r"^        (base_url|model|llm_api_key): '([^']*)'", line)
+        if cur and f:
+            out.setdefault(cur, {})[f.group(1)] = f.group(2)
+    return {k: v for k, v in out.items() if "model" in v or "base_url" in v}
+
+
+def set_provider_field(text, provider, field, value):
+    """Set one 8-space field inside a specific provider stanza."""
+    import re
+    lines = text.splitlines(keepends=True)
+    inside = False
+    for i, line in enumerate(lines):
+        if re.match(rf"^      {re.escape(provider)}:\s*(#.*)?$", line):
+            inside = True
+            continue
+        if inside and re.match(r"^\S|^  \S|^    \S|^      \S", line):
+            break                                           # left the stanza
+        if inside:
+            m = re.match(rf"^(        {field}: ')([^']*)(')", line)
+            if m:
+                lines[i] = m.group(1) + _q(value) + m.group(3) + line[m.end():]
+                return "".join(lines)
+    return None                                             # field not found
+
+
+def get_persona(text):
+    import re
+    m = re.search(r"^  persona_prompt: \|\n((?:[ \t]*\n|    .*\n)*)", text, re.M)
+    if not m:
+        return ""
+    return "\n".join(l[4:] if l.startswith("    ") else ""
+                     for l in m.group(1).splitlines()).strip()
+
+
+def set_persona(text, prompt):
+    import re
+    block = "".join("    " + l.rstrip() + "\n" if l.strip() else "\n"
+                    for l in prompt.strip().splitlines()) or "    \n"
+    return re.sub(r"^(  persona_prompt: \|\n)(?:[ \t]*\n|    .*\n)*",
+                  lambda m: m.group(1) + block + "\n", text, count=1, flags=re.M)
+
+
+def ai_state():
+    text = read_conf()
+    import re
+    cur = re.search(r"^\s+llm_provider: '([^']*)'", text, re.M)
+    cname = re.search(r"^  character_name: '([^']*)'", text, re.M)
+    hname = re.search(r"^  human_name: '([^']*)'", text, re.M)
+    return {
+        "llm_provider": cur.group(1) if cur else None,
+        "providers": provider_blocks(text),
+        "character_name": cname.group(1) if cname else "",
+        "human_name": hname.group(1) if hname else "",
+        "persona_prompt": get_persona(text),
+        "cards": load_library().get("_cards", []),
+    }
+
+
 # ---- sequence playback ------------------------------------------------------
 def play_sequence(model, seq):
     """Run steps in a background thread; only one sequence plays at a time."""
@@ -194,6 +295,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(out)
             return
 
+        if path == "/api/ai":
+            self._json(ai_state())
+            return
+
         self._json({"error": "not found"}, 404)
 
     # ---- POST ----
@@ -263,6 +368,70 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sequence/stop":
             stop_player()
             fire_emote(["off"])
+            self._json({"ok": True})
+            return
+
+        if path == "/api/ai/backend":
+            # {"provider": ..., "base_url"?, "model"?, "llm_api_key"?}
+            prov = body.get("provider", "")
+            text = read_conf()
+            if prov not in provider_blocks(text):
+                self._json({"error": f"unknown provider {prov!r}"}, 400)
+                return
+            text = _set_quoted(text, r"^(\s+llm_provider: ')([^']*)(')", prov)
+            skipped = []
+            for field in ("base_url", "model", "llm_api_key"):
+                if field in body and body[field] != "":
+                    t2 = set_provider_field(text, prov, field, body[field])
+                    if t2 is None:
+                        skipped.append(field)   # stanza doesn't have this field
+                    else:
+                        text = t2
+            write_conf(text)
+            self._json({"ok": True, "skipped": skipped,
+                        "note": "restart the backend to apply"})
+            return
+
+        if path == "/api/ai/character":
+            # {"character_name"?, "human_name"?, "persona_prompt"?}
+            text = read_conf()
+            if body.get("character_name"):
+                text = _set_quoted(text, r"^(  character_name: ')([^']*)(')",
+                                   body["character_name"])
+            if body.get("human_name"):
+                text = _set_quoted(text, r"^(  human_name: ')([^']*)(')",
+                                   body["human_name"])
+            if "persona_prompt" in body and body["persona_prompt"].strip():
+                text = set_persona(text, body["persona_prompt"])
+            write_conf(text)
+            self._json({"ok": True, "note": "restart the backend to apply"})
+            return
+
+        if path == "/api/ai/restart":
+            # switch_model.sh to the CURRENT model = clean backend restart
+            # + kiosk reload + ghost look re-applied
+            ok, out = run_script(os.path.join(SCRIPTS, "switch_model.sh"),
+                                 conf_model() or "", timeout=180)
+            self._json({"ok": ok, "output": out[-800:]})
+            return
+
+        if path == "/api/cards/save":
+            card = body.get("card", {})
+            if not card.get("name"):
+                self._json({"error": "card needs a name"}, 400)
+                return
+            lib = load_library()
+            cards = lib.setdefault("_cards", [])
+            cards[:] = [c for c in cards if c["name"] != card["name"]] + [card]
+            save_library(lib)
+            self._json({"ok": True})
+            return
+
+        if path == "/api/cards/delete":
+            lib = load_library()
+            cards = lib.setdefault("_cards", [])
+            cards[:] = [c for c in cards if c["name"] != body.get("name")]
+            save_library(lib)
             self._json({"ok": True})
             return
 
