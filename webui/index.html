@@ -129,6 +129,35 @@
       <code>POST /api/sequence/play {"name": …}</code> — labels tell it when.</div>
   </section>
 
+  <!-- ============ HAND GESTURES ============ -->
+  <section class="wide">
+    <h2>Hand gestures</h2>
+    <div class="row2">
+      <button id="handsToggle"></button>
+      <span class="hint">Face tracking is always on either way — this only controls
+        whether hand poses can do anything.</span>
+    </div>
+    <div class="row2" id="gestureRows" style="gap:16px"></div>
+    <div class="row2">
+      <label>hold
+        <select id="holdCount">
+          <option value="0">fist (0)</option><option value="1">1 finger</option>
+          <option value="2">2 fingers</option><option value="3">3 fingers</option>
+          <option value="4">palm (4)</option>
+        </select></label>
+      <label>for <input type="number" id="holdSecs" value="3" min="1" step="0.5"
+        style="width:70px"> s →</label>
+      <select id="holdAction"></select>
+      <button id="saveGestures" class="primary">Save mapping</button>
+    </div>
+    <div class="hint">Finger <i>count</i> is what's detected (which fingers doesn't
+      matter; thumbs never count). Remaps apply <b>live</b> — the sidecar reloads the
+      file on change. <b>nudge</b> steps the way the finger points, so it only makes
+      sense on 1 finger. Sequences from the panel above are assignable too — a gesture
+      can play one. The <b>hold</b> row is the long-press action (default: fist 3 s
+      = restore home, the blind panic button).</div>
+  </section>
+
   <!-- ============ AI BACKEND ============ -->
   <section class="wide">
     <h2>AI backend</h2>
@@ -386,7 +415,43 @@ $("saveCard").onclick = async () => {
   $("cardName").value = ""; toast(`card "${name}" saved`); refreshAI();
 };
 
-refresh(); refreshAI();
+// ---------- hand gestures ----------
+const COUNT_NAMES = ["fist (0)", "1 finger", "2 fingers", "3 fingers", "palm (4)"];
+let G = {};
+function actionOptions(sel) {
+  const all = [...G.actions, ...G.sequence_actions];
+  return all.map(a => `<option value="${a}" ${a===sel?"selected":""}>` +
+    (a.startsWith("sequence:") ? "▶ " + a.slice(9) : a.replace("_"," ")) +
+    `</option>`).join("");
+}
+async function refreshGestures() {
+  G = await api("/api/gestures");
+  $("handsToggle").textContent = G.hands_on
+    ? "Hand gestures: ON — click to disable"
+    : "Hand gestures: OFF (face tracking only) — click to enable";
+  $("gestureRows").innerHTML = [0,1,2,3,4].map(i => `
+    <label>${COUNT_NAMES[i]} →
+      <select class="gmap" data-count="${i}">
+        ${actionOptions(G.map.counts[String(i)] || "none")}
+      </select></label>`).join("");
+  $("holdCount").value = String(G.map.hold.count);
+  $("holdSecs").value = G.map.hold.seconds;
+  $("holdAction").innerHTML = actionOptions(G.map.hold.action);
+}
+$("handsToggle").onclick = async () => {
+  await api("/api/hands", {on: !G.hands_on}); refreshGestures();
+};
+$("saveGestures").onclick = async () => {
+  const counts = {};
+  document.querySelectorAll(".gmap").forEach(s => counts[s.dataset.count] = s.value);
+  const r = await api("/api/gestures", {map: {counts,
+    hold: {count: +$("holdCount").value, seconds: +$("holdSecs").value,
+           action: $("holdAction").value}}});
+  toast(r.ok ? "mapping saved — live now" : (r.error||"failed"), r.ok);
+  refreshGestures();
+};
+
+refresh(); refreshAI(); refreshGestures();
 setInterval(refresh, 10000);
 </script>
 </body>

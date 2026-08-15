@@ -309,3 +309,17 @@ Two more panels at the bottom of the studio:
 
 API: `GET /api/ai`, `POST /api/ai/backend`, `POST /api/ai/character`, `POST /api/ai/restart`,
 `POST /api/cards/save|delete`.
+
+### Remapping gestures (web UI)
+
+The **Hand gestures** panel in the studio maps each finger count (0–4) to an action:
+`none`, `zoom_in`, `zoom_out`, `nudge`, `gaze`, `emote_next`, `emote_off`, `home`, or
+**any saved sequence** (`▶ name`) — so e.g. three fingers can play your "greeting" sequence.
+The **hold** row is the long-press: which count, held how long, does what (default fist 3 s =
+restore home). There's also a hands on/off toggle button, same switch as
+`gesture_ctl.sh hands on|off`.
+
+Mapping lives in `scripts/gesture_map.json`; the sidecar watches the file's mtime and reloads
+on change, so saves from the UI apply **live** — no restart. `nudge` aims where the finger
+points, so it only makes sense on count 1. Direct-mapped `home`/sequence actions have a 4 s
+cooldown so a held hand fires once.

@@ -9,13 +9,14 @@
 # same size step as the up.sh/zoom_in.sh scripts. Nothing tracks your hand
 # continuously, so nothing can run away off-screen.
 #
-# Gestures are just HOW MANY fingers you hold up (thumb never counts):
-#   0 (fist)           zoom OUT, one step per 0.25s while held
-#   1 finger           nudge one step the way the finger points (up/down/left/right)
-#   2 fingers          the model watches your hand
-#   3 fingers          next emote (the cycle passes through neutral)
-#   4 (open palm)      zoom IN,  one step per 0.25s while held
-#   fist held 3s       panic button: restore the saved "home" framing
+# Gestures are just HOW MANY fingers you hold up (thumb never counts).
+# What each count DOES is REMAPPABLE in scripts/gesture_map.json (edited from
+# the web UI's "Hand gestures" panel; hot-reloaded, no restart). Defaults:
+#   0 (fist)           zoom OUT      3 fingers   next emote
+#   1 finger           nudge         4 (palm)    zoom IN
+#   2 fingers          gaze at hand  hold fist 3s = restore "home" framing
+# Actions: none | zoom_in | zoom_out | nudge | gaze | emote_next | emote_off
+#          | home | sequence:<web-UI sequence name>
 #
 # Home framing is snapshotted on first run and re-settable with
 # `gesture_ctl.sh sethome` — it is NOT the model_dict default, which for a
@@ -85,10 +86,9 @@ HAND_MIN_SCORE = 0.7    # raised from MediaPipe's 0.5 default: at 0.5 the palm
                         # detector fires on faces, and a face filling the frame
                         # reads as an open palm (= zoom in forever)
 EMOTE_COOLDOWN = 1.5    # seconds between gesture-triggered emotes
-PANIC_HOLD = 3.0        # seconds a FIST must be held to restore home. The fist
-                        # zooms out while you hold it — those steps are simply
-                        # overwritten when home lands. Long deliberate zoom-outs
-                        # should release and re-fist before the 3s is up.
+ONESHOT_COOLDOWN = 4.0  # seconds between one-shot actions (home / sequences)
+                        # mapped directly to a count. The HOLD action's timing
+                        # lives in gesture_map.json instead.
 LOST_GRACE = 0.25       # seconds a gesture may drop out before it counts as released
 
 
@@ -254,31 +254,69 @@ def point_direction(lms, finger, invert_x, invert_y):
     return None
 
 
-def classify_hand(lms, invert_x, invert_y):
-    """One action for this hand, purely from HOW MANY fingers are extended.
-
-    0=zoom out  1=nudge (the way the finger aims)  2=gaze  3=next emote  4=zoom in
+def hand_count(lms):
+    """(finger_count, extended_flags, span) for this hand, or None if too far.
 
     Which fingers doesn't matter — only the count. The thumb is never counted:
     measured on this rig, a thumb reads the same folded or out (thumb-to-knuckle
-    0.49 thumbs-up vs 0.55 fist — no separation), so it can't be trusted."""
+    0.49 thumbs-up vs 0.55 fist — no separation), so it can't be trusted.
+    What each count DOES comes from gesture_map.json (editable in the web UI)."""
     xs = [p.x for p in lms]
     ys = [p.y for p in lms]
-    if max(max(xs) - min(xs), max(ys) - min(ys)) < MIN_HAND_SPAN:
+    span = max(max(xs) - min(xs), max(ys) - min(ys))
+    if span < MIN_HAND_SPAN:
         return None                                         # too far away to mean it
-
     out = [r >= FINGER_EXTENDED for r in finger_reach(lms)]
-    n = sum(out)
+    return sum(out), out, span
 
-    if n == 0:
-        return "zoom_out"                                   # fist
-    if n == 1:
-        return point_direction(lms, out.index(True), invert_x, invert_y)
-    if n == 2:
-        return "gaze"
-    if n == 3:
-        return "emote_next"
-    return "zoom_in"                                        # open palm
+
+# ---- remappable gesture map -------------------------------------------------
+GESTURE_MAP_FILE = os.path.join(HERE, "gesture_map.json")
+DEFAULT_GESTURE_MAP = {
+    "counts": {"0": "zoom_out", "1": "nudge", "2": "gaze",
+               "3": "emote_next", "4": "zoom_in"},
+    "hold": {"count": 0, "seconds": 3.0, "action": "home"},
+}
+_gmap = {"mtime": None, "map": DEFAULT_GESTURE_MAP}
+
+
+def gesture_map():
+    """Current finger-count → action map; hot-reloads when the file changes
+    (the web UI writes it), so remaps apply live without a restart."""
+    try:
+        mt = os.path.getmtime(GESTURE_MAP_FILE)
+    except OSError:
+        return _gmap["map"]
+    if mt != _gmap["mtime"]:
+        _gmap["mtime"] = mt
+        try:
+            with open(GESTURE_MAP_FILE, encoding="utf-8") as fh:
+                m = json.load(fh)
+            _gmap["map"] = {
+                "counts": {**DEFAULT_GESTURE_MAP["counts"],
+                           **{str(k): str(v) for k, v in (m.get("counts") or {}).items()}},
+                "hold": {**DEFAULT_GESTURE_MAP["hold"], **(m.get("hold") or {})},
+            }
+            print(f"[gesture] map loaded: {_gmap['map']['counts']} "
+                  f"hold={_gmap['map']['hold']}")
+        except Exception as e:
+            print(f"[gesture] bad gesture_map.json ({e}) — keeping previous map")
+    return _gmap["map"]
+
+
+def play_webui_sequence(name):
+    """Trigger a web-UI emote sequence over HTTP (server plays it in its own
+    thread, so this returns immediately). Harmless no-op if the UI is down."""
+    try:
+        req = urllib.request.Request(
+            "http://localhost:8800/api/sequence/play",
+            data=json.dumps({"name": name}).encode(),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=3)
+        return True
+    except Exception as e:
+        print(f"[gesture] sequence {name!r} failed (web UI running?): {e}")
+        return False
 
 
 # ---- camera -----------------------------------------------------------------
@@ -465,8 +503,9 @@ def main():
     held_frames = 0      # frames it has been stable for
     last_step = 0.0
     dirty = False        # framing changed since the last save
-    panic_since = None
-    panic_fired = False
+    hold_since = None
+    hold_fired = False
+    last_oneshot = 0.0
     last_emote = 0.0
     last_seen = 0.0
     active = None
@@ -521,26 +560,33 @@ def main():
 
             # ---- decide ONE action for this frame ----
             # Every hand is considered (so left and right both work), but only a
-            # single action can win. Overlapping triggers were the bug that made
-            # her drift: a pose read as both a gesture and a "point" fired twice.
-            # classify_hand() returns at most one action per hand by construction,
-            # since the finger-count cases are mutually exclusive.
-            action, hx, hy = None, 0.0, 0.0
+            # single hand can win — the biggest one (closest = most deliberate).
+            # The finger COUNT is fixed detection; what a count DOES comes from
+            # gesture_map.json, hot-reloaded so web-UI remaps apply live.
+            gmap = gesture_map()
+            action, raw_count, hx, hy = None, None, 0.0, 0.0
             best = None
-            for i, lms in enumerate(hand_list):
+            for lms in hand_list:
                 if inside_face(lms, face):       # your face is not an open palm
                     continue
-                act = classify_hand(lms, args.invert_x, args.invert_y)
-                # rank by how clearly the index stands out, so the more
-                # deliberate hand wins when both are up
-                score = finger_reach(lms)[0]
-                if act and (best is None or score > best[0]):
-                    best = (score, act, lms[0])
+                hc = hand_count(lms)
+                if hc and (best is None or hc[2] > best[0]):
+                    best = (hc[2], hc[0], hc[1], lms)
             if best:
-                _, action, w = best
+                _, raw_count, out, lms = best
+                w = lms[0]
                 hx = (1.0 - w.x) if args.invert_x else w.x   # wrist: stable
                 hy = w.y if args.invert_y else (1.0 - w.y)   # whatever fingers do
                 last_seen = now
+                mapped = gmap["counts"].get(str(raw_count), "none")
+                if mapped == "nudge":
+                    # direction comes from a finger — use the first extended one
+                    # (a count with none extended can't aim, so it does nothing)
+                    if any(out):
+                        action = point_direction(lms, out.index(True),
+                                                 args.invert_x, args.invert_y)
+                elif mapped != "none":
+                    action = mapped
 
             # A gesture that blinks out mid-hold is not a release — hand tracking
             # drops constantly. Grace only DELAYS the release; it never invents an
@@ -556,9 +602,9 @@ def main():
                     persist(cdp.frame())
                     dirty = False
                 held, held_frames, last_step = action, 0, 0.0
-            # once panic has fired, the still-held fist must NOT keep stepping —
-            # it would immediately walk her off the home framing it just restored
-            if delta and action == held and not panic_fired:
+            # once the hold action has fired, the still-held hand must NOT keep
+            # stepping — it would walk her off the framing it just restored
+            if delta and action == held and not hold_fired:
                 held_frames += 1
                 # STEP_WARMUP kills the misreads that happen mid-transition, e.g.
                 # the frame or two of "fist" as you flick your hand open
@@ -583,32 +629,54 @@ def main():
                 if args.debug and frames % 30 == 0:
                     print(f"[face] ({fx:.2f},{fy:.2f})")
 
-            # ---- EMOTES ----
-            # (the cycle passes through "neutral", so there's no separate off-gesture)
-            if action == "emote_next" and now - last_emote > EMOTE_COOLDOWN:
+            # ---- ONE-SHOT actions (cooldown-gated so a held hand fires once) ----
+            def restore_home():
+                h = get_home()
+                if h:
+                    cdp.eval("window.__ghostFrame=%s;window.__ghostFrameTarget=null;'ok'"
+                             % json.dumps(h))
+                    persist(h)
+                    print(f"[gesture] restored home framing {h}")
+                else:
+                    print("[gesture] no home framing saved — run: gesture_ctl.sh sethome")
+
+            if action in ("emote_next", "emote_off") and now - last_emote > EMOTE_COOLDOWN:
                 last_emote = now
-                fire(EMOTE_SH)
+                fire(EMOTE_SH) if action == "emote_next" else fire(EMOTE_SH, "off")
                 if args.debug:
                     print(f"[emote] {action}")
+            elif action == "home" and now - last_oneshot > ONESHOT_COOLDOWN:
+                last_oneshot = now
+                restore_home()
+                dirty = False
+            elif action and action.startswith("sequence:") \
+                    and now - last_oneshot > ONESHOT_COOLDOWN:
+                last_oneshot = now
+                play_webui_sequence(action.split(":", 1)[1])
+                if args.debug:
+                    print(f"[sequence] {action}")
 
-            # ---- PANIC: fist held PANIC_HOLD restores home. The zoom-out steps
-            # that fire during the hold are overwritten when home lands. ----
-            if action == "zoom_out":
-                if panic_since is None:
-                    panic_since, panic_fired = now, False
-                elif not panic_fired and now - panic_since >= PANIC_HOLD:
-                    panic_fired = True
-                    h = get_home()
-                    if h:
-                        cdp.eval("window.__ghostFrame=%s;window.__ghostFrameTarget=null;'ok'"
-                                 % json.dumps(h))
-                        persist(h)
+            # ---- HOLD action: holding the configured count for N seconds ----
+            # (default: fist 3s = restore home — the blind panic button). Any
+            # steps fired during the hold are overwritten when it lands, and
+            # hold_fired suppresses further stepping until release.
+            hold = gmap["hold"]
+            if raw_count is not None and raw_count == int(hold.get("count", 0)):
+                if hold_since is None:
+                    hold_since, hold_fired = now, False
+                elif not hold_fired and now - hold_since >= float(hold.get("seconds", 3.0)):
+                    hold_fired = True
+                    ha = str(hold.get("action", "home"))
+                    if ha == "home":
+                        restore_home()
                         dirty = False
-                        print(f"[gesture] restored home framing {h}")
-                    else:
-                        print("[gesture] no home framing saved — run: gesture_ctl.sh sethome")
+                    elif ha.startswith("sequence:"):
+                        play_webui_sequence(ha.split(":", 1)[1])
+                    elif ha in ("emote_next", "emote_off"):
+                        fire(EMOTE_SH) if ha == "emote_next" else fire(EMOTE_SH, "off")
+                    print(f"[gesture] hold fired: {ha}")
             else:
-                panic_since, panic_fired = None, False
+                hold_since, hold_fired = None, False
 
             if args.debug and frames % 15 == 0:
                 fps = frames / (now - t_start)

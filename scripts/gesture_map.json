@@ -1,0 +1,14 @@
+{
+  "counts": {
+    "0": "zoom_out",
+    "1": "nudge",
+    "2": "gaze",
+    "3": "emote_next",
+    "4": "zoom_in"
+  },
+  "hold": {
+    "count": 0,
+    "seconds": 3.0,
+    "action": "home"
+  }
+}

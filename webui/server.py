@@ -33,6 +33,10 @@ HOME = os.path.expanduser("~")
 OLV = os.path.join(HOME, "Open-LLM-VTuber")
 SCRIPTS = os.path.join(HOME, "OpenGhost", "scripts")
 LIBRARY = os.path.join(HERE, "library.json")
+GESTURE_MAP = os.path.join(SCRIPTS, "gesture_map.json")
+HANDS_OFF_FLAG = os.path.join(SCRIPTS, ".hands_off")
+GESTURE_ACTIONS = ["none", "zoom_in", "zoom_out", "nudge", "gaze",
+                   "emote_next", "emote_off", "home"]
 PORT = 8800
 
 _lock = threading.Lock()          # library file writes
@@ -299,6 +303,27 @@ class Handler(BaseHTTPRequestHandler):
             self._json(ai_state())
             return
 
+        if path == "/api/gestures":
+            gmap = {"counts": {"0": "zoom_out", "1": "nudge", "2": "gaze",
+                               "3": "emote_next", "4": "zoom_in"},
+                    "hold": {"count": 0, "seconds": 3.0, "action": "home"}}
+            try:
+                with open(GESTURE_MAP, encoding="utf-8") as fh:
+                    saved = json.load(fh)
+                gmap["counts"].update({str(k): str(v)
+                                       for k, v in (saved.get("counts") or {}).items()})
+                gmap["hold"].update(saved.get("hold") or {})
+            except Exception:
+                pass
+            seqs = load_library().get(conf_model(), {}).get("sequences", [])
+            self._json({
+                "map": gmap,
+                "hands_on": not os.path.exists(HANDS_OFF_FLAG),
+                "actions": GESTURE_ACTIONS,
+                "sequence_actions": [f"sequence:{s['name']}" for s in seqs],
+            })
+            return
+
         self._json({"error": "not found"}, 404)
 
     # ---- POST ----
@@ -369,6 +394,46 @@ class Handler(BaseHTTPRequestHandler):
             stop_player()
             fire_emote(["off"])
             self._json({"ok": True})
+            return
+
+        if path == "/api/gestures":
+            # {"map": {"counts": {...}, "hold": {...}}} — validated, then written
+            # to scripts/gesture_map.json; the sidecar hot-reloads it (no restart)
+            m = body.get("map", {})
+            counts = {str(k): str(v) for k, v in (m.get("counts") or {}).items()
+                      if str(k) in "01234"}
+            valid = set(GESTURE_ACTIONS)
+            bad = [v for v in counts.values()
+                   if v not in valid and not v.startswith("sequence:")]
+            hold = m.get("hold") or {}
+            ha = str(hold.get("action", "home"))
+            if ha not in valid and not ha.startswith("sequence:"):
+                bad.append(ha)
+            if bad:
+                self._json({"error": f"unknown action(s): {bad}"}, 400)
+                return
+            out = {"counts": counts,
+                   "hold": {"count": int(hold.get("count", 0)),
+                            "seconds": max(1.0, float(hold.get("seconds", 3.0))),
+                            "action": ha}}
+            with _lock:
+                tmp = GESTURE_MAP + ".tmp"
+                with open(tmp, "w") as fh:
+                    json.dump(out, fh, indent=2)
+                os.replace(tmp, GESTURE_MAP)
+            self._json({"ok": True, "map": out,
+                        "note": "applies live — the sidecar reloads on change"})
+            return
+
+        if path == "/api/hands":
+            if body.get("on"):
+                try:
+                    os.remove(HANDS_OFF_FLAG)
+                except OSError:
+                    pass
+            else:
+                open(HANDS_OFF_FLAG, "w").close()
+            self._json({"ok": True, "hands_on": not os.path.exists(HANDS_OFF_FLAG)})
             return
 
         if path == "/api/ai/backend":
