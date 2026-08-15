@@ -1,3 +1,37 @@
+# Hologram Studio
+
+A Raspberry Pi 5 Pepper's Ghost hologram running a live AI character: a Live2D
+avatar under a beam-splitter cube that watches you (face tracking), responds to
+hand gestures, plays labeled emote sequences, and talks through a local LLM —
+all managed from a web UI (models, framing, gestures, sequences, AI backend,
+character cards).
+
+Built on top of two excellent open-source projects:
+
+- **[OpenGhost](https://github.com/xanderchinxyz/OpenGhost)** by Alexander Chin —
+  the Pepper's Ghost hardware design (Pi 5 + HyperPixel square display + beam
+  splitter cube), py5 sketches, and STL files. This repo began as a clone of it
+  and keeps its full commit history and MIT license.
+- **[Open-LLM-VTuber](https://github.com/t41372/Open-LLM-VTuber)** by Yi-Ting
+  Chiu (MIT) — the Live2D avatar runtime (rendering, LLM/STT/TTS pipeline,
+  expression system) that the hologram displays. Not vendored here: it runs as
+  a separate install at `~/Open-LLM-VTuber` that this project's scripts drive
+  over CDP/HTTP and configure. Live2D itself is subject to the
+  [Live2D license](https://www.live2d.com/en/terms/live2d-open-software-license-agreement/);
+  bundled sample models and third-party VTS models keep their own licenses.
+
+## What's here
+
+- `scripts/live2d_ghost.sh` — kiosk launcher (mirrored display, ghost look, autostart)
+- `scripts/gesture_ctl.py` — camera sidecar: face tracking + remappable finger-count gestures
+- `webui/` — Hologram Studio web UI on `:8800` (see `README-Gestures.md`)
+- `scripts/add_model.py`, `scan_expressions.py` — model install + expression registration
+- `README-Live2D.md`, `README-Gestures.md` — full documentation
+
+The original OpenGhost documentation follows.
+
+---
+
 # OpenGhost
 
 This is the repository for OpenGhost, an open-source Pepper's Ghost display that uses a Raspberry Pi 5 with a camera, square screen, and a beam splitter cube as the transparent reflector, which sits on top of the screen. Additional peripherals, such as microphones, speakers, etc., can be added for some more interactivity via the USB ports.
