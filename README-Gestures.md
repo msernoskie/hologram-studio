@@ -254,3 +254,41 @@ numpy 1.24); that's why frames come from `rpicam-vid` over a pipe rather than pi
 Models are in `~/OpenGhost/models/` (`gesture_recognizer.task`, `blaze_face_short_range.tflite`).
 
 Not wired into autostart yet — start it by hand until the directions are dialled in.
+
+---
+
+## Web UI — Hologram Studio
+
+`http://<pi-ip>:8800` (LAN only). Start/stop with:
+
+```bash
+~/OpenGhost/scripts/webui.sh start|stop|status|debug    # log: ~/openghost-webui.log
+```
+
+Three panels:
+
+- **Models** — click to switch the active Live2D model (runs `switch_model.sh`:
+  restarts the backend and reloads the hologram, ~15 s).
+- **Emotes & AI labels** — every expression the active model registers. Click a name to
+  preview it live; tick several and "Fire selected" to preview a merged combo. Each emote
+  takes comma-separated emotion labels (e.g. `joy, excited`). **Apply labels → AI emotionMap**
+  writes them into Open-LLM-VTuber's `model_dict.json` `emotionMap` — the mechanism its LLM
+  pipeline natively uses to pick expressions from `[joy]`-style tags (restart the backend to
+  pick it up: `scripts/switch_model.sh <model>`).
+- **Sequences** — chain steps (each step = one or more emotes + a hold time) into named,
+  labeled sequences ("greeting", "victory dance"). Play/edit/delete from the list; playback
+  always lands back on neutral.
+
+**For AI integration**, the server is itself an API (all JSON):
+
+```
+GET  /api/export                     everything: models, emotes, labels, sequences
+POST /api/emote            {"names": ["star_eyes"]}          set expression(s)
+POST /api/sequence/play    {"name": "greeting"}              run a labeled sequence
+POST /api/sequence/stop
+POST /api/switch           {"model": "jane_doe"}
+```
+
+So an LLM with tool access can `GET /api/export` to learn what's available (the labels are
+the semantic hints) and then fire emotes or sequences over HTTP. Sequence/label storage is
+`webui/library.json`, per model, committed to git.

@@ -1,0 +1,81 @@
+{
+  "jane_doe": {
+    "sequences": [
+      {
+        "name": "test_wave",
+        "labels": [
+          "greeting",
+          "happy"
+        ],
+        "steps": [
+          {
+            "emotes": [
+              "star_eyes"
+            ],
+            "hold_ms": 600
+          },
+          {
+            "emotes": [
+              "blush",
+              "hand_right"
+            ],
+            "hold_ms": 600
+          }
+        ]
+      }
+    ],
+    "emote_labels": {
+      "neutral": [
+        "neutral"
+      ],
+      "star_eyes": [
+        "joy",
+        "excited"
+      ],
+      "blush": [
+        "smug",
+        "shy",
+        "blush"
+      ],
+      "tears": [
+        "sad",
+        "crying"
+      ],
+      "angry": [
+        "angry"
+      ],
+      "blank_eyes": [
+        "surprised",
+        "shocked",
+        "fear"
+      ],
+      "face_dark": [
+        "disgust",
+        "menacing"
+      ],
+      "blood": [
+        "hurt"
+      ]
+    }
+  },
+  "mao_pro": {
+    "emote_labels": {
+      "exp_01": [
+        "neutral"
+      ],
+      "exp_03": [
+        "anger",
+        "disgust"
+      ],
+      "exp_02": [
+        "fear",
+        "sadness"
+      ],
+      "exp_04": [
+        "joy",
+        "smirk",
+        "surprise"
+      ]
+    }
+  }
+}
