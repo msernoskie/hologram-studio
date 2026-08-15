@@ -323,3 +323,14 @@ Mapping lives in `scripts/gesture_map.json`; the sidecar watches the file's mtim
 on change, so saves from the UI apply **live** — no restart. `nudge` aims where the finger
 points, so it only makes sense on count 1. Direct-mapped `home`/sequence actions have a 4 s
 cooldown so a held hand fires once.
+
+### Framing from the web UI
+
+The Models panel now includes a **Framing** d-pad: arrows nudge her around, ＋/－ zoom, with a
+step-size selector (fine/medium/big — one "fine" step = one `up.sh`). The readout shows live,
+saved, and home framing side by side. Buttons: **Restore home**, **Set home = current**, and
+**Reset to model default** (confirm-guarded — that's the small centred `kScale` framing, and it
+does not touch home). Everything applies live and persists per model, exactly like the shell
+scripts, which all still work.
+
+API: `GET/POST /api/frame` (`{ds,dx,dy}`), `POST /api/frame/home|sethome|reset`.

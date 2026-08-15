@@ -58,6 +58,9 @@
   .busy { opacity:.5; pointer-events:none; }
   .row2 { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px; }
   section.wide { grid-column: 1 / -1; }
+  .dpad { display:grid; grid-template-columns:repeat(3, 44px); gap:4px;
+          justify-content:start; margin:6px 0; }
+  .dpad button { width:44px; height:38px; font-size:15px; }
   select, textarea { background:var(--bg); color:var(--text); border:1px solid var(--line);
     border-radius:6px; padding:5px 8px; font-size:14px; font-family:inherit; }
   label { color:var(--dim); font-size:13px; display:inline-flex; gap:6px; align-items:center; }
@@ -82,6 +85,33 @@
     <div id="models"></div>
     <div class="hint">Click to switch — restarts the backend and reloads the
       hologram (takes ~15&nbsp;s).</div>
+
+    <h2 style="margin-top:16px">Framing</h2>
+    <div class="dpad">
+      <span></span><button data-f="0,0,1">▲</button><span></span>
+      <button data-f="0,-1,0">◀</button><button id="frameShow" title="refresh">⌖</button>
+      <button data-f="0,1,0">▶</button>
+      <span></span><button data-f="0,0,-1">▼</button><span></span>
+    </div>
+    <div class="row2">
+      <button data-f="1,0,0">＋ zoom</button>
+      <button data-f="-1,0,0">－ zoom</button>
+      <label>step
+        <select id="frameStep">
+          <option value="0.05">fine (0.05)</option>
+          <option value="0.15">medium (0.15)</option>
+          <option value="0.4">big (0.4)</option>
+        </select></label>
+    </div>
+    <pre id="frameState" style="max-height:120px; margin-top:8px"></pre>
+    <div class="row2">
+      <button id="frameHome">Restore home</button>
+      <button id="frameSetHome">Set home = current</button>
+      <button id="frameReset" class="danger" title="model_dict default — small + centred">
+        Reset to model default</button>
+    </div>
+    <div class="hint">Same steps as the <code>up.sh</code>/<code>zoom_in.sh</code>
+      scripts — applied live and persisted per model, survives reboot.</div>
   </section>
 
   <!-- ============ EMOTES + LABELS ============ -->
@@ -415,6 +445,39 @@ $("saveCard").onclick = async () => {
   $("cardName").value = ""; toast(`card "${name}" saved`); refreshAI();
 };
 
+// ---------- framing ----------
+function showFrame(st) {
+  if (!st) return;
+  const f = v => v ? `scale ${v.scale}  x ${v.x}  y ${v.y}` : "—";
+  $("frameState").textContent =
+    `model: ${st.model}\nlive : ${f(st.live)}\nsaved: ${f(st.saved)}\nhome : ${f(st.home)}`;
+}
+async function frameNudge(ds, dx, dy) {
+  const s = +$("frameStep").value;
+  const r = await api("/api/frame", {ds: ds*s, dx: dx*s, dy: dy*s});
+  if (!r.ok) toast("nudge failed (hologram running?)", false);
+  showFrame(r.state);
+}
+document.querySelectorAll("[data-f]").forEach(b => {
+  const [ds,dx,dy] = b.dataset.f.split(",").map(Number);
+  b.onclick = () => frameNudge(ds, dx, dy);
+});
+$("frameShow").onclick = async () => showFrame(await api("/api/frame"));
+$("frameHome").onclick = async () => {
+  const r = await api("/api/frame/home", {});
+  toast(r.ok ? "home restored" : (r.error||"failed"), r.ok); showFrame(r.state);
+};
+$("frameSetHome").onclick = async () => {
+  const r = await api("/api/frame/sethome", {});
+  toast(r.ok ? "home = current framing" : (r.error||"failed"), r.ok); showFrame(r.state);
+};
+$("frameReset").onclick = async () => {
+  if (!confirm("Reset to the model_dict default? For full-body models this is a "
+    + "small centred figure — home framing is NOT affected.")) return;
+  const r = await api("/api/frame/reset", {});
+  toast(r.ok ? "reset to model default" : "failed", r.ok); showFrame(r.state);
+};
+
 // ---------- hand gestures ----------
 const COUNT_NAMES = ["fist (0)", "1 finger", "2 fingers", "3 fingers", "palm (4)"];
 let G = {};
@@ -452,6 +515,7 @@ $("saveGestures").onclick = async () => {
 };
 
 refresh(); refreshAI(); refreshGestures();
+api("/api/frame").then(showFrame);
 setInterval(refresh, 10000);
 </script>
 </body>

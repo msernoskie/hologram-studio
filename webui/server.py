@@ -84,6 +84,14 @@ def save_library(lib):
         os.replace(tmp, LIBRARY)
 
 
+def _read_json(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
 def run_script(*argv, timeout=120):
     """Run a scripts/ helper; returns (ok, output)."""
     try:
@@ -96,6 +104,48 @@ def run_script(*argv, timeout=120):
 def fire_emote(names):
     """names = list of emote names, or ['off'] to clear."""
     return run_script(os.path.join(SCRIPTS, "emote.sh"), *names, timeout=20)
+
+
+# ---- framing / placement ----------------------------------------------------
+def cdp_js(js):
+    """Evaluate JS in the kiosk via cdp_eval.py (OLV venv has websocket-client)."""
+    ok, out = run_script(os.path.join(OLV, ".venv", "bin", "python"),
+                         os.path.join(SCRIPTS, "cdp_eval.py"), js, timeout=10)
+    return out if ok else None
+
+
+def live_frame():
+    raw = cdp_js("JSON.stringify(window.__ghostFrame||null)")
+    try:
+        return json.loads(json.loads(raw))    # cdp prints the JSON of a string
+    except Exception:
+        return None
+
+
+def frame_state():
+    model = conf_model()
+    saved = _read_json(os.path.join(SCRIPTS, "framing.json")).get(model)
+    home = _read_json(os.path.join(SCRIPTS, "gesture_home.json")).get(model)
+    return {"model": model, "saved": saved, "home": home, "live": live_frame()}
+
+
+def apply_frame(frame):
+    """Set the live frame outright + persist to framing.json (clamped)."""
+    sc = max(0.15, min(4.0, float(frame["scale"])))
+    lim = max(1.2, sc)
+    f = {"scale": round(sc, 3),
+         "x": round(max(-lim, min(lim, float(frame["x"]))), 3),
+         "y": round(max(-lim, min(lim, float(frame["y"]))), 3)}
+    cdp_js("window.__ghostFrame=%s;window.__ghostFrameTarget=null;'ok'" % json.dumps(f))
+    model = conf_model()
+    path = os.path.join(SCRIPTS, "framing.json")
+    data = _read_json(path)
+    data[model] = f
+    with _lock:
+        with open(path + ".tmp", "w") as fh:
+            json.dump(data, fh, indent=2)
+        os.replace(path + ".tmp", path)
+    return f
 
 
 # ---- conf.yaml surgery ------------------------------------------------------
@@ -303,6 +353,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(ai_state())
             return
 
+        if path == "/api/frame":
+            self._json(frame_state())
+            return
+
         if path == "/api/gestures":
             gmap = {"counts": {"0": "zoom_out", "1": "nudge", "2": "gaze",
                                "3": "emote_next", "4": "zoom_in"},
@@ -394,6 +448,54 @@ class Handler(BaseHTTPRequestHandler):
             stop_player()
             fire_emote(["off"])
             self._json({"ok": True})
+            return
+
+        if path == "/api/frame":
+            # {"ds":…, "dx":…, "dy":…} — one nudge via _frame.sh (live + persisted),
+            # exactly what the up/down/left/right/zoom_in/zoom_out scripts do
+            try:
+                ds = max(-1.0, min(1.0, float(body.get("ds", 0))))
+                dx = max(-1.0, min(1.0, float(body.get("dx", 0))))
+                dy = max(-1.0, min(1.0, float(body.get("dy", 0))))
+            except (TypeError, ValueError):
+                self._json({"error": "ds/dx/dy must be numbers"}, 400)
+                return
+            ok, out = run_script(os.path.join(SCRIPTS, "_frame.sh"),
+                                 str(ds), str(dx), str(dy), timeout=20)
+            self._json({"ok": ok, "output": out[-200:], "state": frame_state()})
+            return
+
+        if path == "/api/frame/reset":
+            ok, out = run_script(os.path.join(SCRIPTS, "reset.sh"), timeout=20)
+            self._json({"ok": ok, "output": out[-200:], "state": frame_state()})
+            return
+
+        if path == "/api/frame/home":
+            home = frame_state()["home"]
+            if not home:
+                self._json({"error": "no home framing saved for this model"}, 404)
+                return
+            f = apply_frame(home)
+            self._json({"ok": True, "applied": f, "state": frame_state()})
+            return
+
+        if path == "/api/frame/sethome":
+            f = live_frame()
+            if not f:
+                self._json({"error": "kiosk not reachable — is the hologram running?"},
+                           502)
+                return
+            model = conf_model()
+            path_h = os.path.join(SCRIPTS, "gesture_home.json")
+            data = _read_json(path_h)
+            data[model] = {"scale": round(float(f["scale"]), 3),
+                           "x": round(float(f["x"]), 3),
+                           "y": round(float(f["y"]), 3)}
+            with _lock:
+                with open(path_h + ".tmp", "w") as fh:
+                    json.dump(data, fh, indent=2)
+                os.replace(path_h + ".tmp", path_h)
+            self._json({"ok": True, "home": data[model], "state": frame_state()})
             return
 
         if path == "/api/gestures":
