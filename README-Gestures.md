@@ -334,3 +334,18 @@ does not touch home). Everything applies live and persists per model, exactly li
 scripts, which all still work.
 
 API: `GET/POST /api/frame` (`{ds,dx,dy}`), `POST /api/frame/home|sethome|reset`.
+
+### Adding models & expression scanning (web UI)
+
+**Add model** (Models panel): upload a Cubism 3+ archive — zip, rar or 7z, VTube Studio
+exports included. The pipeline (`scripts/add_model.py`) extracts it (`unar`, which handles
+the rar variants p7zip can't), finds the `.model3.json`, ASCII-slugs the folder/entry name,
+**downscales any texture over 4096 px** (the Pi 5 GPU's max — oversized textures load but
+render invisible), registers all expression files, and adds it to `model_dict.json`.
+
+**Expression scanning**: VTS models routinely ship `.exp3.json` expression files without
+registering them in the `.model3.json` — they exist on disk but the emote selector can't see
+them (fern arrived like this; jane_doe was fixed by hand before this existed). The scanner
+(`scripts/scan_expressions.py [model]`) registers the missing ones and adds an empty
+`neutral`. It runs automatically on **every model switch** and during **Add model**; the
+"Scan for expressions" button in the emotes panel runs it on demand.

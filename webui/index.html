@@ -84,7 +84,21 @@
     <h2>Models</h2>
     <div id="models"></div>
     <div class="hint">Click to switch — restarts the backend and reloads the
-      hologram (takes ~15&nbsp;s).</div>
+      hologram (takes ~15&nbsp;s). Expression files are auto-registered on
+      every switch.</div>
+
+    <h2 style="margin-top:16px">Add model</h2>
+    <input type="file" id="modelFile" accept=".zip,.rar,.7z"
+      style="max-width:100%; font-size:13px">
+    <div class="row2">
+      <input type="text" id="modelName" placeholder="name (optional)"
+        style="width:130px">
+      <button id="modelUpload" class="primary">Upload</button>
+    </div>
+    <div class="hint">A Cubism&nbsp;3+ model archive (zip/rar/7z — VTube&nbsp;Studio
+      exports work). Automatically: extracts, finds the model, downscales
+      textures over 4096&nbsp;px (bigger renders invisible on the Pi's GPU),
+      registers its expressions, and adds it to the model list.</div>
 
     <h2 style="margin-top:16px">Framing</h2>
     <div class="dpad">
@@ -123,6 +137,8 @@
       <button id="clearEmote">Neutral</button>
       <button id="saveLabels">Save labels</button>
       <button id="applyMap">Apply labels → AI emotionMap</button>
+      <button id="scanExp" title="find .exp3.json files the model shipped but never registered">
+        Scan for expressions</button>
     </div>
     <div class="hint">Click an emote name to preview it live; tick several and
       “Fire selected” to preview a combo (previews only — sequences are built in
@@ -481,6 +497,39 @@ $("saveCard").onclick = async () => {
     character_name: $("chName").value.trim(),
     persona_prompt: $("chPersona").value }});
   $("cardName").value = ""; toast(`card "${name}" saved`); refreshAI();
+};
+
+// ---------- add model / scan expressions ----------
+$("modelUpload").onclick = async () => {
+  const f = $("modelFile").files[0];
+  if (!f) return toast("choose an archive first", false);
+  $("modelUpload").disabled = true;
+  toast(`uploading ${f.name}…`);
+  try {
+    const q = `filename=${encodeURIComponent(f.name)}` +
+              `&name=${encodeURIComponent($("modelName").value.trim())}`;
+    const r = await (await fetch(`/api/models/upload?${q}`,
+                                 {method:"POST", body:f})).json();
+    if (r.ok) {
+      toast(`added ${r.name} — ${r.expressions.length} expression(s)` +
+            (r.textures_downscaled.length
+              ? `, ${r.textures_downscaled.length} texture(s) downscaled` : ""));
+      $("modelFile").value = ""; $("modelName").value = "";
+      refresh();
+    } else toast(r.error || "add failed", false);
+  } catch (e) { toast("upload failed: " + e, false); }
+  $("modelUpload").disabled = false;
+};
+$("scanExp").onclick = async () => {
+  const r = await api("/api/models/scan", {});
+  if (r.error) return toast(r.error, false);
+  if (!r.added.length) return toast("expressions already up to date");
+  toast(`registered: ${r.added.join(", ")}`);
+  if (confirm(`Registered ${r.added.length} expression(s): ${r.added.join(", ")}.\n` +
+              "Reload the model now to use them? (~15 s)")) {
+    await api("/api/ai/restart", {});
+    refresh();
+  }
 };
 
 // ---------- framing ----------

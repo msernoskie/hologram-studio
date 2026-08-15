@@ -382,18 +382,78 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- POST ----
     def do_POST(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/models/upload":
+            # raw archive bytes; filename + optional name come as query params
+            # (our own page sends fetch(file) — no multipart parsing needed)
+            from urllib.parse import parse_qs
+            q = parse_qs(parsed.query)
+            fname = os.path.basename(q.get("filename", ["model.zip"])[0])
+            want = q.get("name", [""])[0]
+            n = int(self.headers.get("Content-Length", 0))
+            if not (0 < n <= 300 * 1024 * 1024):
+                self._json({"error": "empty or oversized upload (300MB max)"}, 400)
+                return
+            updir = os.path.join(HERE, "uploads")
+            os.makedirs(updir, exist_ok=True)
+            dest = os.path.join(updir, fname)
+            with open(dest, "wb") as fh:
+                remaining = n
+                while remaining:
+                    chunk = self.rfile.read(min(1 << 20, remaining))
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    remaining -= len(chunk)
+            ok, out = run_script("python3", os.path.join(SCRIPTS, "add_model.py"),
+                                 dest, want, timeout=600)
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            try:                       # add_model prints a JSON summary
+                self._json(json.loads(out[out.index("{"):]))
+            except Exception:
+                self._json({"error": out[-400:] or "add_model failed"}, 500)
+            return
+
         try:
             body = self._body()
         except Exception:
             self._json({"error": "bad json"}, 400)
             return
 
+        if path == "/api/models/scan":
+            # register any unregistered .exp3.json expressions for a model
+            target = body.get("model") or conf_model()
+            ok, out = run_script("python3",
+                                 os.path.join(SCRIPTS, "scan_expressions.py"),
+                                 target, timeout=60)
+            try:
+                self._json(json.loads(out[out.index("{"):]))
+            except Exception:
+                self._json({"error": out[-400:] or "scan failed"}, 500)
+            return
+
         if path == "/api/switch":
             name = body.get("model", "")
+            # register any unregistered expression files FIRST, so the kiosk
+            # reload that switch_model.sh performs picks them up (VTS models
+            # routinely ship .exp3.json files without registering them)
+            scanned = []
+            ok_s, out_s = run_script("python3",
+                                     os.path.join(SCRIPTS, "scan_expressions.py"),
+                                     name, timeout=60)
+            try:
+                scanned = json.loads(out_s[out_s.index("{"):]).get("added", [])
+            except Exception:
+                pass
             ok, out = run_script(os.path.join(SCRIPTS, "switch_model.sh"), name,
                                  timeout=180)
-            self._json({"ok": ok, "output": out[-800:]})
+            self._json({"ok": ok, "output": out[-800:],
+                        "expressions_registered": scanned})
             return
 
         if path == "/api/emote":
