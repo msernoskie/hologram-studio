@@ -124,27 +124,29 @@
       <button id="saveLabels">Save labels</button>
       <button id="applyMap">Apply labels → AI emotionMap</button>
     </div>
-    <div class="hint">Click an emote name to preview it live. Select several
-      (checkbox) and “Fire selected” to preview a combo. Type comma-separated
-      emotion labels (e.g. <i>joy, excited</i>) — “Apply” writes them into
-      Open-LLM-VTuber’s emotionMap so the LLM can use <code>[joy]</code> tags.</div>
+    <div class="hint">Click an emote name to preview it live; tick several and
+      “Fire selected” to preview a combo (previews only — sequences are built in
+      the next panel). Type comma-separated emotion labels (e.g. <i>joy, excited</i>)
+      — “Apply” writes them into Open-LLM-VTuber’s emotionMap so the LLM can use
+      <code>[joy]</code> tags.</div>
   </section>
 
   <!-- ============ SEQUENCES ============ -->
   <section>
     <h2>Sequences</h2>
+    <div class="hint">A sequence = steps played in order. Each step sets one or more
+      emotes and holds them for a duration.</div>
     <div id="builder">
       <div class="row2">
-        <button id="addStep">Add step from selected emotes</button>
-        <label>hold <input type="number" id="holdMs" value="800" min="100"
-          step="100" style="width:80px"> ms</label>
+        <input type="text" id="seqName" placeholder="name (e.g. greeting)">
+        <input type="text" id="seqLabels" class="labels"
+          placeholder="labels: happy, wave">
       </div>
       <div id="steps"></div>
       <div class="row2">
-        <input type="text" id="seqName" placeholder="sequence name (e.g. greeting)">
-        <input type="text" id="seqLabels" class="labels"
-          placeholder="labels: happy, wave">
-        <button id="saveSeq" class="primary">Save</button>
+        <button id="addStep">＋ Add step</button>
+        <button id="testSeq">▶ Test draft</button>
+        <button id="saveSeq" class="primary">Save sequence</button>
         <button id="clearSteps">Clear</button>
       </div>
     </div>
@@ -264,12 +266,17 @@ function render() {
   document.querySelectorAll(".model").forEach(el =>
     el.onclick = () => switchModel(el.dataset.m));
 
+  // preserve typed-but-unsaved label text across re-renders
+  const pendingLabels = {};
+  document.querySelectorAll(".emote").forEach(el =>
+    pendingLabels[el.dataset.e] = el.querySelector("input.labels").value);
   $("emotes").innerHTML = st.emotes.length ? st.emotes.map(e => `
     <div class="emote ${S.selected.has(e)?"selected":""}" data-e="${e}">
       <input type="checkbox" ${S.selected.has(e)?"checked":""}>
       <button class="name">${e}</button>
       <input type="text" class="labels" placeholder="labels…"
-        value="${(st.emote_labels[e]||[]).join(", ")}">
+        value="${pendingLabels[e] !== undefined ? pendingLabels[e]
+                 : (st.emote_labels[e]||[]).join(", ")}">
     </div>`).join("")
     : `<div class="hint">This model has no registered expressions.</div>`;
   document.querySelectorAll(".emote").forEach(el => {
@@ -282,14 +289,33 @@ function render() {
     };
   });
 
+  const emoteOpts = sel => S.emotes.map(e =>
+    `<option ${e===sel?"selected":""}>${e}</option>`).join("");
   $("steps").innerHTML = S.steps.map((s,i) => `
     <div class="step">
-      <span class="emotes">${s.emotes.join(" + ")}</span>
-      <span>${s.hold_ms} ms</span>
-      <button class="small danger" data-i="${i}">✕</button>
-    </div>`).join("");
-  document.querySelectorAll(".step button").forEach(b =>
-    b.onclick = () => { S.steps.splice(+b.dataset.i,1); render(); });
+      <span style="color:var(--dim)">${i+1}.</span>
+      ${s.emotes.map((em,j) =>
+        `<select class="stepEmote" data-i="${i}" data-j="${j}">${emoteOpts(em)}</select>`
+      ).join(" + ")}
+      <button class="small" data-adde="${i}" title="add another emote to this step">＋</button>
+      ${s.emotes.length>1
+        ? `<button class="small" data-pope="${i}" title="remove last emote">－</button>` : ""}
+      <span style="flex:1"></span>
+      <input type="number" class="stepHold" data-i="${i}" value="${s.hold_ms}"
+        min="100" step="100" style="width:75px"> ms
+      <button class="small danger" data-del="${i}">✕</button>
+    </div>`).join("")
+    || `<div class="hint">No steps yet — “＋ Add step” to start.</div>`;
+  document.querySelectorAll(".stepEmote").forEach(sel => sel.onchange = () =>
+    S.steps[+sel.dataset.i].emotes[+sel.dataset.j] = sel.value);
+  document.querySelectorAll(".stepHold").forEach(inp => inp.onchange = () =>
+    S.steps[+inp.dataset.i].hold_ms = Math.max(100, +inp.value||800));
+  document.querySelectorAll("#steps [data-adde]").forEach(b => b.onclick = () => {
+    S.steps[+b.dataset.adde].emotes.push(S.emotes[0]||"neutral"); render(); });
+  document.querySelectorAll("#steps [data-pope]").forEach(b => b.onclick = () => {
+    S.steps[+b.dataset.pope].emotes.pop(); render(); });
+  document.querySelectorAll("#steps [data-del]").forEach(b => b.onclick = () => {
+    S.steps.splice(+b.dataset.del,1); render(); });
 
   $("sequences").innerHTML = (st.sequences||[]).map(q => `
     <div class="seq ${st.playing===q.name?"playing":""}">
@@ -352,11 +378,23 @@ $("applyMap").onclick = async () => {
   toast(r.ok ? "emotionMap updated — restart backend to apply" : "failed", r.ok);
 };
 $("addStep").onclick = () => {
-  if (!S.selected.size) return toast("select emotes for the step", false);
-  S.steps.push({emotes:[...S.selected], hold_ms:+$("holdMs").value||800});
-  S.selected.clear(); render();
+  // sensible default: repeat the last step's duration, start from neutral
+  const last = S.steps[S.steps.length-1];
+  S.steps.push({emotes:[S.emotes[0]||"neutral"], hold_ms:last?last.hold_ms:800});
+  render();
 };
-$("clearSteps").onclick = () => { S.steps = []; render(); };
+$("testSeq").onclick = async () => {
+  if (!S.steps.length) return toast("add a step first", false);
+  toast("testing draft…");
+  for (const s of S.steps) {
+    await api("/api/emote", {names:s.emotes});
+    await new Promise(r => setTimeout(r, s.hold_ms));
+  }
+  await api("/api/emote", {names:["off"]});
+  toast("draft done");
+};
+$("clearSteps").onclick = () => { S.steps = []; $("seqName").value="";
+  $("seqLabels").value=""; render(); };
 $("saveSeq").onclick = async () => {
   const name = $("seqName").value.trim();
   if (!name || !S.steps.length) return toast("need a name and ≥1 step", false);
@@ -516,7 +554,15 @@ $("saveGestures").onclick = async () => {
 
 refresh(); refreshAI(); refreshGestures();
 api("/api/frame").then(showFrame);
-setInterval(refresh, 10000);
+// periodic refresh keeps "playing"/model state current — but NEVER while the
+// user is typing or picking from a dropdown: a re-render would steal focus
+// and wipe the field mid-keystroke.
+function userIsEditing() {
+  const e = document.activeElement;
+  return e && (e.tagName === "INPUT" || e.tagName === "TEXTAREA" ||
+               e.tagName === "SELECT");
+}
+setInterval(() => { if (!userIsEditing()) refresh(); }, 10000);
 </script>
 </body>
 </html>
