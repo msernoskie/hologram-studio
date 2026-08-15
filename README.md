@@ -17,8 +17,12 @@ Built on top of two excellent open-source projects:
   expression system) that the hologram displays. Not vendored here: it runs as
   a separate install at `~/Open-LLM-VTuber` that this project's scripts drive
   over CDP/HTTP and configure. Live2D itself is subject to the
-  [Live2D license](https://www.live2d.com/en/terms/live2d-open-software-license-agreement/);
-  bundled sample models and third-party VTS models keep their own licenses.
+  [Live2D license](https://www.live2d.com/en/terms/live2d-open-software-license-agreement/).
+
+**No Live2D models are distributed in this repo.** Models live in the local
+Open-LLM-VTuber install (`live2d-models/`) and each carries its own license —
+use the sample models Open-LLM-VTuber ships with, or install your own via the
+web UI's *Add model*. Third-party models must not be committed here.
 
 ## What's here
 
