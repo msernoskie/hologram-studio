@@ -462,8 +462,9 @@ def main():
     # Re-inject the idle loop so the gaze/frame hooks this script drives are
     # definitely live (idempotent — it cancels and replaces its own rAF).
     sys.path.insert(0, HERE)
-    from openghost_kiosk_inject import IDLE_JS  # noqa: E402
+    from openghost_kiosk_inject import IDLE_JS, idle_cfg_js  # noqa: E402
     cdp.eval(IDLE_JS)
+    cdp.eval(idle_cfg_js())
 
     # First run for this model: whatever is on screen now is a framing the user
     # can actually see, so it makes a sane home. Never overwritten automatically.

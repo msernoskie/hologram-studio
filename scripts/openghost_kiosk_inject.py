@@ -16,6 +16,18 @@ from websocket import create_connection
 DBG = "http://localhost:9222"
 CONF = os.path.expanduser("~/Open-LLM-VTuber/conf.yaml")
 FRAMING = os.path.join(os.path.dirname(os.path.abspath(__file__)), "framing.json")
+IDLE_CFG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "idle.json")
+
+
+def idle_cfg_js():
+    """JS that pushes scripts/idle.json into the page (IDLE_JS reads it live).
+    Missing/bad file -> empty object, and IDLE_JS's defaults take over."""
+    try:
+        with open(IDLE_CFG, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except Exception:
+        cfg = {}
+    return "window.__ghostIdleCfg=%s;'ok'" % json.dumps(cfg)
 
 
 def current_model():
@@ -57,11 +69,18 @@ SETUP_JS = """(()=>{
 # motions (e.g. goth_mofu). Pauses while _lastLipSyncValue shows she's speaking,
 # so it never fights lip-sync during a conversation. Idempotent (cancels prior loop).
 #
-# Plus an idle HOP: two quick head-bobs (a pitch nod, not a position move)
-# every few seconds whenever she isn't talking — including while she's
-# gaze-following a face, which is when you're actually watching her. It rides
-# as an offset on the dragManager pitch target, so the rig's own easing turns
-# the sharp |sin| humps into a soft, alive double-bob.
+# Plus an idle HEAD-BOB (a pitch nod, not a position move): bursts of 1 or 3
+# quick bobs — picked at random, at random intervals — whenever she isn't
+# talking, including while she's gaze-following a face (that's when you're
+# actually watching her). It rides as an offset on the dragManager pitch
+# target, so the rig's own easing turns the sharp |sin| humps into a soft,
+# alive bob.
+#
+# Both are configured by window.__ghostIdleCfg (from scripts/idle.json, pushed
+# at launch below and live-edited by the web UI's "Idle animation" panel):
+#   idle:false  = no figure-8 sway and no bob (gaze/face-tracking unaffected)
+#   bob:false   = no bob (nested under idle)
+#   bob_amp / bob_min_gap / bob_max_gap = bob strength + seconds between bursts
 IDLE_JS = """(()=>{
   if(typeof getLive2DManager!=="function") return "no-manager";
   if(window.__ghostIdleRAF) cancelAnimationFrame(window.__ghostIdleRAF);
@@ -90,20 +109,37 @@ IDLE_JS = """(()=>{
       }
       if(md._dragManager){
         const talking=(md._lastLipSyncValue||0)>0.03;   // conversation in progress
-        // Idle hop: two quick head-bobs every ~6s — a PITCH offset on the
-        // look-target (head tilts up/down; her position never moves). Rides on
-        // top of gaze-following too, and goes quiet while she's talking. The
-        // dragManager's velocity-limited easing softens the |sin| humps.
-        const hp=((now-t0)/1000)%6;              // 2 bobs in 0.7s, rest ~5.3s
-        const bob=(!talking&&hp<0.7)?0.35*Math.abs(Math.sin(hp/0.7*Math.PI*2)):0;
+        const IC=window.__ghostIdleCfg||{};
+        const idleOn=IC.idle!==false, bobOn=idleOn&&IC.bob!==false;
+        // Head-bob bursts: a PITCH offset on the look-target (head tilts
+        // up/down; her position never moves). Each burst is 1 or 3 quick bobs
+        // (0.35s each, coin-flipped), then a random 4-9s rest. Quiet while
+        // talking; rides on top of gaze-following. The dragManager's
+        // velocity-limited easing softens the |sin| humps.
+        if(!window.__ghostBob) window.__ghostBob={next:now+2000,n:0,start:0};
+        const B=window.__ghostBob;
+        let bob=0;
+        if(bobOn&&!talking){
+          if(B.n===0&&now>=B.next){B.n=Math.random()<0.5?1:3;B.start=now;}
+          if(B.n>0){
+            const el=(now-B.start)/1000;
+            if(el>=B.n*0.35){
+              B.n=0;
+              const g0=IC.bob_min_gap??4, g1=IC.bob_max_gap??9;
+              B.next=now+(g0+Math.random()*Math.max(0,g1-g0))*1000;
+            } else bob=(IC.bob_amp??0.35)*Math.abs(Math.sin(el/0.35*Math.PI));
+          }
+        } else if(B.n>0){B.n=0;B.next=now+3000;} // burst cut short — re-arm
         const gz=window.__ghostGaze;                    // fresh = a hand is on screen
         if(gz&&now-gz.t<600){
           md._dragManager.set(gz.x,Math.min(1,gz.y+bob)); // look at it, beats idle
-        } else if(!talking){
+        } else if(!talking&&idleOn){
           const t=(now-t0)/1000;
           const x=0.38*Math.sin(t*0.9)+0.10*Math.sin(t*0.33); // slow horizontal sway
           const y=0.16*Math.sin(t*1.7)+0.06*Math.sin(t*0.5);  // subtler vertical bob
           md._dragManager.set(x,Math.min(1,y+bob));
+        } else if(!talking){
+          md._dragManager.set(0,0);              // idle animation off: rest centred
         }
       }
     }
@@ -168,6 +204,7 @@ def main():
             if evaluate(ws, SETUP_JS):
                 nudge_pointer(ws)
                 idle = evaluate(ws, IDLE_JS)
+                evaluate(ws, idle_cfg_js())
                 frame = saved_frame()
                 if frame:
                     evaluate(ws, "window.__ghostFrame=%s;'ok'" % json.dumps(frame))

@@ -1,0 +1,7 @@
+{
+  "idle": true,
+  "bob": true,
+  "bob_amp": 0.35,
+  "bob_min_gap": 4.0,
+  "bob_max_gap": 9.0
+}

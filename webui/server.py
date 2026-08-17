@@ -35,6 +35,11 @@ SCRIPTS = os.path.join(HOME, "OpenGhost", "scripts")
 LIBRARY = os.path.join(HERE, "library.json")
 GESTURE_MAP = os.path.join(SCRIPTS, "gesture_map.json")
 HANDS_OFF_FLAG = os.path.join(SCRIPTS, ".hands_off")
+IDLE_JSON = os.path.join(SCRIPTS, "idle.json")
+# Idle animation defaults — keep in sync with the fallbacks in IDLE_JS
+# (openghost_kiosk_inject.py). idle=master (figure-8 sway); bob nests under it.
+IDLE_DEFAULTS = {"idle": True, "bob": True,
+                 "bob_amp": 0.35, "bob_min_gap": 4.0, "bob_max_gap": 9.0}
 GESTURE_ACTIONS = ["none", "zoom_in", "zoom_out", "nudge", "gaze",
                    "emote_next", "emote_off", "home"]
 PORT = 8800
@@ -378,6 +383,17 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/api/idle":
+            conf = dict(IDLE_DEFAULTS)
+            try:
+                with open(IDLE_JSON, encoding="utf-8") as fh:
+                    saved = json.load(fh)
+                conf.update({k: saved[k] for k in IDLE_DEFAULTS if k in saved})
+            except Exception:
+                pass
+            self._json(conf)
+            return
+
         self._json({"error": "not found"}, 404)
 
     # ---- POST ----
@@ -596,6 +612,40 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 open(HANDS_OFF_FLAG, "w").close()
             self._json({"ok": True, "hands_on": not os.path.exists(HANDS_OFF_FLAG)})
+            return
+
+        if path == "/api/idle":
+            # Any subset of IDLE_DEFAULTS' keys — validated, written to
+            # scripts/idle.json, and pushed straight into the live page.
+            conf = dict(IDLE_DEFAULTS)
+            try:
+                with open(IDLE_JSON, encoding="utf-8") as fh:
+                    saved = json.load(fh)
+                conf.update({k: saved[k] for k in IDLE_DEFAULTS if k in saved})
+            except Exception:
+                pass
+            try:
+                for k in ("idle", "bob"):
+                    if k in body:
+                        conf[k] = bool(body[k])
+                if "bob_amp" in body:
+                    conf["bob_amp"] = min(1.0, max(0.05, float(body["bob_amp"])))
+                for k in ("bob_min_gap", "bob_max_gap"):
+                    if k in body:
+                        conf[k] = min(60.0, max(1.0, float(body[k])))
+                if conf["bob_min_gap"] > conf["bob_max_gap"]:
+                    conf["bob_min_gap"], conf["bob_max_gap"] = \
+                        conf["bob_max_gap"], conf["bob_min_gap"]
+            except (TypeError, ValueError) as e:
+                self._json({"error": f"bad value: {e}"}, 400)
+                return
+            with _lock:
+                tmp = IDLE_JSON + ".tmp"
+                with open(tmp, "w") as fh:
+                    json.dump(conf, fh, indent=2)
+                os.replace(tmp, IDLE_JSON)
+            cdp_js("window.__ghostIdleCfg=%s;'ok'" % json.dumps(conf))
+            self._json({"ok": True, **conf})
             return
 
         if path == "/api/ai/backend":

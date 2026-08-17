@@ -206,6 +206,29 @@
       = restore home, the blind panic button).</div>
   </section>
 
+  <!-- ============ IDLE ANIMATION ============ -->
+  <section class="wide">
+    <h2>Idle animation</h2>
+    <div class="row2">
+      <button id="idleToggle"></button>
+      <span class="hint">The alive-looking sway she does when not talking.
+        Face tracking and gestures are unaffected either way — off just means
+        she rests centred and still between interactions.</span>
+    </div>
+    <div class="row2" id="bobRow" style="margin-left:26px; gap:14px">
+      <label><input type="checkbox" id="bobOn"> head-bob bursts</label>
+      <label>strength <input type="number" id="bobAmp" min="0.05" max="1" step="0.05"
+        style="width:70px"></label>
+      <label>every <input type="number" id="bobMin" min="1" max="60" step="1"
+        style="width:58px"> – <input type="number" id="bobMax" min="1" max="60" step="1"
+        style="width:58px"> s</label>
+      <button id="saveIdle" class="primary">Save</button>
+    </div>
+    <div class="hint" style="margin-left:26px">A burst is 1 or 3 quick nods, picked at
+      random, at a random interval in the range above. Pauses while she talks.
+      Applies <b>live</b>.</div>
+  </section>
+
   <!-- ============ AI BACKEND ============ -->
   <section class="wide">
     <h2>AI backend</h2>
@@ -601,7 +624,33 @@ $("saveGestures").onclick = async () => {
   refreshGestures();
 };
 
-refresh(); refreshAI(); refreshGestures();
+// ---------- idle animation ----------
+let IDLE = {};
+async function refreshIdle() {
+  IDLE = await api("/api/idle");
+  $("idleToggle").textContent = IDLE.idle
+    ? "Idle animation: ON — click to disable"
+    : "Idle animation: OFF (rests still) — click to enable";
+  $("bobOn").checked = IDLE.bob;
+  $("bobAmp").value = IDLE.bob_amp;
+  $("bobMin").value = IDLE.bob_min_gap;
+  $("bobMax").value = IDLE.bob_max_gap;
+  // bob is nested under the master toggle — grey it out when idle is off
+  $("bobRow").classList.toggle("busy", !IDLE.idle);
+}
+$("idleToggle").onclick = async () => {
+  await api("/api/idle", {idle: !IDLE.idle}); refreshIdle();
+};
+$("saveIdle").onclick = async () => {
+  const r = await api("/api/idle", {
+    bob: $("bobOn").checked, bob_amp: +$("bobAmp").value,
+    bob_min_gap: +$("bobMin").value, bob_max_gap: +$("bobMax").value,
+  });
+  toast(r.ok ? "idle animation saved — live now" : (r.error||"failed"), r.ok);
+  refreshIdle();
+};
+
+refresh(); refreshAI(); refreshGestures(); refreshIdle();
 api("/api/frame").then(showFrame);
 // periodic refresh keeps "playing"/model state current — but NEVER while the
 // user is typing or picking from a dropdown: a re-render would steal focus
