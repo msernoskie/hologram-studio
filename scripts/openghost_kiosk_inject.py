@@ -69,23 +69,39 @@ SETUP_JS = """(()=>{
 # motions (e.g. goth_mofu). Pauses while _lastLipSyncValue shows she's speaking,
 # so it never fights lip-sync during a conversation. Idempotent (cancels prior loop).
 #
-# Plus an idle HEAD-BOB (a pitch nod, not a position move): bursts of 1 or 3
-# quick bobs — picked at random, at random intervals — whenever she isn't
-# talking, including while she's gaze-following a face (that's when you're
-# actually watching her). It rides as an offset on the dragManager pitch
-# target, so the rig's own easing turns the sharp |sin| humps into a soft,
-# alive bob.
+# Plus a PART-MOTION engine: a list of idle motions (torso bounce, head nod,
+# breath pulse, ...) that each fire in bursts of N quick |sin| pulses — N picked
+# at random per burst from the motion's list — at a random interval, whenever
+# she isn't talking (including while gaze-following a face). Position never
+# moves: each motion drives Live2D PARAMETERS, injected immediately before the
+# core commit (this._model.update() at the end of LAppModel.update() — any
+# later and they never render; learned the hard way). Params are addressed by
+# NAME and resolved to indices per model, so parts a model lacks are silent
+# no-ops and the same config works on every model.
 #
-# Both are configured by window.__ghostIdleCfg (from scripts/idle.json, pushed
-# at launch below and live-edited by the web UI's "Idle animation" panel):
-#   idle:false  = no figure-8 sway and no bob (gaze/face-tracking unaffected)
-#   bob:false   = no bob (nested under idle)
-#   bob_amp / bob_min_gap / bob_max_gap = bob strength + seconds between bursts
+# Configured by window.__ghostIdleCfg (from scripts/idle.json, pushed at launch
+# below and live-edited by the web UI's "Idle motions" tab):
+#   idle:false  = no figure-8 sway and no part motions (gaze unaffected)
+#   motions: [{on, part, amp 0..1, len s/pulse, bursts [ints], min_gap, max_gap}]
 IDLE_JS = """(()=>{
   if(typeof getLive2DManager!=="function") return "no-manager";
   if(window.__ghostIdleRAF) cancelAnimationFrame(window.__ghostIdleRAF);
   const mgr=getLive2DManager();
   const t0=performance.now();
+  // Part presets: [param name, signed fraction of that param's range at amp=1].
+  // Values scale to each param's own min/max, so one amp slider behaves the
+  // same across angle params (±30) and 0..1 params like ParamBreath. Names a
+  // model doesn't have simply resolve to no index and are skipped.
+  const PARTS={
+    torso:[["ParamBodyAngleY0",-0.5],["ParamBodyAngleY",-0.5],
+           ["ParamChestAngleY",-0.35],["ParamShoulderAngleY",-0.3]],
+    head:[["ParamAngleY",0.4]],
+    chest:[["ParamChestAngleY",-0.5],["ParamBreath",0.35]],
+    shoulders:[["ParamShoulderAngleY",-0.55]],
+    breath:[["ParamBreath",0.9]],
+    sway:[["ParamBodyAngleZ0",0.4],["ParamBodyAngleZ",0.4],["ParamAngleZ",0.15]],
+    hips:[["ParamHipAngleZ0",0.5]]
+  };
   function tick(now){
     let md=null; try{md=mgr._models.at(0);}catch(e){}
     if(md){
@@ -107,40 +123,84 @@ IDLE_JS = """(()=>{
         const f=window.__ghostFrame;
         m[0]=f.scale; m[5]=f.scale; m[12]=f.x; m[13]=f.y;
       }
+      const IC=window.__ghostIdleCfg||{};
+      const idleOn=IC.idle!==false;
+      const talking=(md._lastLipSyncValue||0)>0.03;     // conversation in progress
       if(md._dragManager){
-        const talking=(md._lastLipSyncValue||0)>0.03;   // conversation in progress
-        const IC=window.__ghostIdleCfg||{};
-        const idleOn=IC.idle!==false, bobOn=idleOn&&IC.bob!==false;
-        // Head-bob bursts: a PITCH offset on the look-target (head tilts
-        // up/down; her position never moves). Each burst is 1 or 3 quick bobs
-        // (0.35s each, coin-flipped), then a random 4-9s rest. Quiet while
-        // talking; rides on top of gaze-following. The dragManager's
-        // velocity-limited easing softens the |sin| humps.
-        if(!window.__ghostBob) window.__ghostBob={next:now+2000,n:0,start:0};
-        const B=window.__ghostBob;
-        let bob=0;
-        if(bobOn&&!talking){
-          if(B.n===0&&now>=B.next){B.n=Math.random()<0.5?1:3;B.start=now;}
-          if(B.n>0){
-            const el=(now-B.start)/1000;
-            if(el>=B.n*0.35){
-              B.n=0;
-              const g0=IC.bob_min_gap??4, g1=IC.bob_max_gap??9;
-              B.next=now+(g0+Math.random()*Math.max(0,g1-g0))*1000;
-            } else bob=(IC.bob_amp??0.35)*Math.abs(Math.sin(el/0.35*Math.PI));
-          }
-        } else if(B.n>0){B.n=0;B.next=now+3000;} // burst cut short — re-arm
         const gz=window.__ghostGaze;                    // fresh = a hand is on screen
         if(gz&&now-gz.t<600){
-          md._dragManager.set(gz.x,Math.min(1,gz.y+bob)); // look at it, beats idle
+          md._dragManager.set(gz.x,gz.y);               // look at it, beats idle
         } else if(!talking&&idleOn){
           const t=(now-t0)/1000;
           const x=0.38*Math.sin(t*0.9)+0.10*Math.sin(t*0.33); // slow horizontal sway
           const y=0.16*Math.sin(t*1.7)+0.06*Math.sin(t*0.5);  // subtler vertical bob
-          md._dragManager.set(x,Math.min(1,y+bob));
+          md._dragManager.set(x,y);
         } else if(!talking){
           md._dragManager.set(0,0);              // idle animation off: rest centred
         }
+      }
+      // Part-motion engine. The rAF runs each motion's burst state machine and
+      // publishes this frame's parameter adds; the pre-commit wrapper below
+      // applies them. One state per motion index, re-armed a moment after any
+      // interruption (talking / toggled off mid-burst).
+      if(!window.__ghostMotion) window.__ghostMotion={st:{},adds:[]};
+      const M=window.__ghostMotion;
+      M.adds=[];
+      const motions=(idleOn&&!talking)?(IC.motions||[]):[];
+      motions.forEach((mo,i)=>{
+        if(mo.on===false||!PARTS[mo.part]) return;
+        let s=M.st[i]; if(!s) s=M.st[i]={next:now+1500+Math.random()*2500,n:0,start:0};
+        const len=Math.max(0.15,mo.len||0.35);       // seconds per pulse
+        if(s.n===0&&now>=s.next){
+          const bs=(Array.isArray(mo.bursts)&&mo.bursts.length)?mo.bursts:[1,3];
+          s.n=bs[Math.floor(Math.random()*bs.length)];
+          s.start=now;
+        }
+        if(s.n>0){
+          const el=(now-s.start)/1000;
+          if(el>=s.n*len){
+            s.n=0;
+            const g0=mo.min_gap??4, g1=mo.max_gap??9;
+            s.next=now+(g0+Math.random()*Math.max(0,g1-g0))*1000;
+          } else {
+            const env=Math.abs(Math.sin(el/len*Math.PI))*(mo.amp??0.5);
+            PARTS[mo.part].forEach(pe=>M.adds.push([pe[0],env*pe[1]]));
+          }
+        }
+      });
+      // Pre-commit wrapper: parameter adds must land immediately BEFORE the
+      // core commit (this._model.update(), the last call in LAppModel.update)
+      // — any later and the next loadParameters() wipes them unrendered.
+      // Params resolved name->index per model instance (cached, with each
+      // param's range so add fractions scale correctly); unknown names skip.
+      const cm=md._model;
+      if(cm&&cm.update&&!cm.__ghostMotionWrap){
+        cm.__ghostMotionWrap=true;
+        const orig=cm.update.bind(cm);
+        const cache={};
+        cm.update=function(){
+          const M=window.__ghostMotion;
+          if(M&&M.adds.length){
+            for(const a of M.adds){try{
+              let e=cache[a[0]];
+              if(e===undefined){
+                e=null;
+                const n=cm.getParameterCount();
+                for(let j=0;j<n;j++){
+                  const s=cm.getParameterId(j).getString();
+                  if(String(s.s!==undefined?s.s:s)===a[0]){
+                    e={ix:j,mx:Math.max(Math.abs(cm.getParameterMaximumValue(j)),
+                                        Math.abs(cm.getParameterMinimumValue(j)))||1};
+                    break;
+                  }
+                }
+                cache[a[0]]=e;
+              }
+              if(e) cm.addParameterValueByIndex(e.ix,a[1]*e.mx);
+            }catch(err){}}
+          }
+          orig();
+        };
       }
     }
     window.__ghostIdleRAF=requestAnimationFrame(tick);

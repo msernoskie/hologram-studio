@@ -36,10 +36,44 @@ LIBRARY = os.path.join(HERE, "library.json")
 GESTURE_MAP = os.path.join(SCRIPTS, "gesture_map.json")
 HANDS_OFF_FLAG = os.path.join(SCRIPTS, ".hands_off")
 IDLE_JSON = os.path.join(SCRIPTS, "idle.json")
-# Idle animation defaults — keep in sync with the fallbacks in IDLE_JS
-# (openghost_kiosk_inject.py). idle=master (figure-8 sway); bob nests under it.
-IDLE_DEFAULTS = {"idle": True, "bob": True,
-                 "bob_amp": 0.35, "bob_min_gap": 4.0, "bob_max_gap": 9.0}
+# Idle part-motions — parts must match the PARTS map in IDLE_JS
+# (openghost_kiosk_inject.py). idle = master toggle (figure-8 sway + motions).
+MOTION_PARTS = ["torso", "head", "chest", "shoulders", "breath", "sway", "hips"]
+DEFAULT_MOTIONS = [
+    {"on": True, "part": "torso", "amp": 0.5, "len": 0.35, "bursts": [1, 3],
+     "min_gap": 4.0, "max_gap": 9.0},
+    {"on": False, "part": "head", "amp": 0.5, "len": 0.35, "bursts": [1, 3],
+     "min_gap": 5.0, "max_gap": 11.0},
+]
+
+
+def clean_motion(m):
+    """Validate/clamp one motion dict; raises on junk that isn't coercible."""
+    part = str(m.get("part", ""))
+    if part not in MOTION_PARTS:
+        raise ValueError(f"unknown part {part!r}")
+    bursts = m.get("bursts") or [1, 3]
+    bursts = sorted({min(5, max(1, int(b))) for b in bursts[:4]})
+    lo = min(60.0, max(1.0, float(m.get("min_gap", 4))))
+    hi = min(60.0, max(1.0, float(m.get("max_gap", 9))))
+    return {"on": bool(m.get("on", True)), "part": part,
+            "amp": min(1.0, max(0.05, float(m.get("amp", 0.5)))),
+            "len": min(1.5, max(0.15, float(m.get("len", 0.35)))),
+            "bursts": bursts,
+            "min_gap": min(lo, hi), "max_gap": max(lo, hi)}
+
+
+def idle_state():
+    conf = {"idle": True, "motions": DEFAULT_MOTIONS}
+    try:
+        with open(IDLE_JSON, encoding="utf-8") as fh:
+            saved = json.load(fh)
+        conf["idle"] = bool(saved.get("idle", True))
+        if isinstance(saved.get("motions"), list):
+            conf["motions"] = [clean_motion(m) for m in saved["motions"][:8]]
+    except Exception:
+        pass
+    return conf
 GESTURE_ACTIONS = ["none", "zoom_in", "zoom_out", "nudge", "gaze",
                    "emote_next", "emote_off", "home"]
 PORT = 8800
@@ -384,14 +418,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/idle":
-            conf = dict(IDLE_DEFAULTS)
-            try:
-                with open(IDLE_JSON, encoding="utf-8") as fh:
-                    saved = json.load(fh)
-                conf.update({k: saved[k] for k in IDLE_DEFAULTS if k in saved})
-            except Exception:
-                pass
-            self._json(conf)
+            self._json({**idle_state(), "parts": MOTION_PARTS})
             return
 
         self._json({"error": "not found"}, 404)
@@ -615,29 +642,18 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/idle":
-            # Any subset of IDLE_DEFAULTS' keys — validated, written to
+            # {"idle": bool} and/or {"motions": [...]} — validated, written to
             # scripts/idle.json, and pushed straight into the live page.
-            conf = dict(IDLE_DEFAULTS)
+            conf = idle_state()
             try:
-                with open(IDLE_JSON, encoding="utf-8") as fh:
-                    saved = json.load(fh)
-                conf.update({k: saved[k] for k in IDLE_DEFAULTS if k in saved})
-            except Exception:
-                pass
-            try:
-                for k in ("idle", "bob"):
-                    if k in body:
-                        conf[k] = bool(body[k])
-                if "bob_amp" in body:
-                    conf["bob_amp"] = min(1.0, max(0.05, float(body["bob_amp"])))
-                for k in ("bob_min_gap", "bob_max_gap"):
-                    if k in body:
-                        conf[k] = min(60.0, max(1.0, float(body[k])))
-                if conf["bob_min_gap"] > conf["bob_max_gap"]:
-                    conf["bob_min_gap"], conf["bob_max_gap"] = \
-                        conf["bob_max_gap"], conf["bob_min_gap"]
-            except (TypeError, ValueError) as e:
-                self._json({"error": f"bad value: {e}"}, 400)
+                if "idle" in body:
+                    conf["idle"] = bool(body["idle"])
+                if "motions" in body:
+                    if not isinstance(body["motions"], list):
+                        raise ValueError("motions must be a list")
+                    conf["motions"] = [clean_motion(m) for m in body["motions"][:8]]
+            except (TypeError, ValueError, KeyError) as e:
+                self._json({"error": f"bad motion: {e}"}, 400)
                 return
             with _lock:
                 tmp = IDLE_JSON + ".tmp"

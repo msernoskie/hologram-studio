@@ -69,11 +69,21 @@
   .card .name { font-weight:600; }
   .card .preview { flex:1; color:var(--dim); font-size:12px; white-space:nowrap;
                    overflow:hidden; text-overflow:ellipsis; }
+  #tabnav { display:flex; gap:6px; }
+  #tabnav .tab { border-radius:8px 8px 0 0; border-bottom:none; color:var(--dim); }
+  #tabnav .tab.active { color:var(--accent); border-color:var(--accent); }
+  .motion { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+            padding:8px 10px; margin:5px 0; background:var(--panel2);
+            border-radius:8px; }
 </style>
 </head>
 <body>
 <header>
   <h1>OpenGhost — Hologram Studio</h1>
+  <nav id="tabnav">
+    <button class="tab active" data-tab="studio">Studio</button>
+    <button class="tab" data-tab="motions">Idle motions</button>
+  </nav>
   <span class="sub" id="activeName"></span>
   <span id="toast"></span>
 </header>
@@ -206,27 +216,26 @@
       = restore home, the blind panic button).</div>
   </section>
 
-  <!-- ============ IDLE ANIMATION ============ -->
-  <section class="wide">
-    <h2>Idle animation</h2>
+  <!-- ============ IDLE MOTIONS (own tab) ============ -->
+  <section class="wide" id="motionsPanel" style="display:none">
+    <h2>Idle motions</h2>
     <div class="row2">
       <button id="idleToggle"></button>
-      <span class="hint">The alive-looking sway she does when not talking.
-        Face tracking and gestures are unaffected either way — off just means
-        she rests centred and still between interactions.</span>
+      <span class="hint">Master switch for everything below plus the idle
+        figure-8 sway. Face tracking and gestures are unaffected either way —
+        off just means she rests centred and still between interactions.</span>
     </div>
-    <div class="row2" id="bobRow" style="margin-left:26px; gap:14px">
-      <label><input type="checkbox" id="bobOn"> head-bob bursts</label>
-      <label>strength <input type="number" id="bobAmp" min="0.05" max="1" step="0.05"
-        style="width:70px"></label>
-      <label>every <input type="number" id="bobMin" min="1" max="60" step="1"
-        style="width:58px"> – <input type="number" id="bobMax" min="1" max="60" step="1"
-        style="width:58px"> s</label>
-      <button id="saveIdle" class="primary">Save</button>
+    <div id="motionRows" style="margin-top:10px"></div>
+    <div class="row2">
+      <button id="addMotion">+ Add motion</button>
+      <button id="saveIdle" class="primary">Save all</button>
     </div>
-    <div class="hint" style="margin-left:26px">A burst is 1 or 3 quick nods, picked at
-      random, at a random interval in the range above. Pauses while she talks.
-      Applies <b>live</b>.</div>
+    <div class="hint">Each row is one recurring motion: the <b>part</b> it moves,
+      how <b>strong</b>, seconds per <b>pulse</b>, the possible <b>burst</b> sizes
+      (comma-separated — one is picked at random each time, e.g. <code>1,3</code>),
+      and the random rest range between bursts. All motions pause while she talks,
+      none of them ever move her position/framing, and parts a model doesn't have
+      are silently skipped. Applies <b>live</b> on save.</div>
   </section>
 
   <!-- ============ AI BACKEND ============ -->
@@ -624,29 +633,82 @@ $("saveGestures").onclick = async () => {
   refreshGestures();
 };
 
-// ---------- idle animation ----------
-let IDLE = {};
+// ---------- tabs ----------
+function showTab(t) {
+  document.querySelectorAll("main > section").forEach(s => {
+    const isMotions = s.id === "motionsPanel";
+    s.style.display = ((t === "motions") === isMotions) ? "" : "none";
+  });
+  document.querySelectorAll("#tabnav .tab").forEach(b =>
+    b.classList.toggle("active", b.dataset.tab === t));
+}
+document.querySelectorAll("#tabnav .tab").forEach(b =>
+  b.onclick = () => showTab(b.dataset.tab));
+
+// ---------- idle motions ----------
+const PART_LABELS = {torso:"torso (bounce)", head:"head (nod)", chest:"chest",
+  shoulders:"shoulders", breath:"breath (chest rise)", sway:"body sway (side)",
+  hips:"hip sway"};
+let IDLE = {motions: []};
+function motionRow(m, i) {
+  const opts = (IDLE.parts||Object.keys(PART_LABELS)).map(p =>
+    `<option value="${p}" ${p===m.part?"selected":""}>${PART_LABELS[p]||p}</option>`).join("");
+  return `<div class="motion" data-i="${i}">
+    <label><input type="checkbox" class="m-on" ${m.on?"checked":""}> on</label>
+    <select class="m-part">${opts}</select>
+    <label>strength <input type="number" class="m-amp" value="${m.amp}"
+      min="0.05" max="1" step="0.05" style="width:66px"></label>
+    <label>pulse <input type="number" class="m-len" value="${m.len}"
+      min="0.15" max="1.5" step="0.05" style="width:66px"> s</label>
+    <label>bursts of <input type="text" class="m-bursts" value="${m.bursts.join(",")}"
+      style="width:56px"></label>
+    <label>every <input type="number" class="m-min" value="${m.min_gap}"
+      min="1" max="60" step="1" style="width:56px"> –
+      <input type="number" class="m-max" value="${m.max_gap}"
+      min="1" max="60" step="1" style="width:56px"> s</label>
+    <button class="small danger m-del">✕</button>
+  </div>`;
+}
+function renderMotions() {
+  $("idleToggle").textContent = IDLE.idle
+    ? "Idle motions: ON — click to disable all"
+    : "Idle motions: OFF (rests still) — click to enable";
+  $("motionRows").innerHTML = IDLE.motions.map(motionRow).join("");
+  $("motionRows").classList.toggle("busy", !IDLE.idle);
+  document.querySelectorAll(".m-del").forEach(b => b.onclick = () => {
+    IDLE.motions.splice(+b.closest(".motion").dataset.i, 1); renderMotions();
+  });
+}
+function collectMotions() {
+  return [...document.querySelectorAll(".motion")].map(row => ({
+    on: row.querySelector(".m-on").checked,
+    part: row.querySelector(".m-part").value,
+    amp: +row.querySelector(".m-amp").value,
+    len: +row.querySelector(".m-len").value,
+    bursts: row.querySelector(".m-bursts").value.split(",")
+      .map(s => parseInt(s.trim())).filter(n => n >= 1 && n <= 5),
+    min_gap: +row.querySelector(".m-min").value,
+    max_gap: +row.querySelector(".m-max").value,
+  }));
+}
 async function refreshIdle() {
   IDLE = await api("/api/idle");
-  $("idleToggle").textContent = IDLE.idle
-    ? "Idle animation: ON — click to disable"
-    : "Idle animation: OFF (rests still) — click to enable";
-  $("bobOn").checked = IDLE.bob;
-  $("bobAmp").value = IDLE.bob_amp;
-  $("bobMin").value = IDLE.bob_min_gap;
-  $("bobMax").value = IDLE.bob_max_gap;
-  // bob is nested under the master toggle — grey it out when idle is off
-  $("bobRow").classList.toggle("busy", !IDLE.idle);
+  renderMotions();
 }
 $("idleToggle").onclick = async () => {
-  await api("/api/idle", {idle: !IDLE.idle}); refreshIdle();
+  IDLE.motions = collectMotions();          // keep unsaved edits across toggle
+  await api("/api/idle", {idle: !IDLE.idle, motions: IDLE.motions});
+  refreshIdle();
+};
+$("addMotion").onclick = () => {
+  IDLE.motions = collectMotions();
+  IDLE.motions.push({on: true, part: "torso", amp: 0.5, len: 0.35,
+                     bursts: [1,3], min_gap: 4, max_gap: 9});
+  renderMotions();
 };
 $("saveIdle").onclick = async () => {
-  const r = await api("/api/idle", {
-    bob: $("bobOn").checked, bob_amp: +$("bobAmp").value,
-    bob_min_gap: +$("bobMin").value, bob_max_gap: +$("bobMax").value,
-  });
-  toast(r.ok ? "idle animation saved — live now" : (r.error||"failed"), r.ok);
+  const r = await api("/api/idle", {motions: collectMotions()});
+  toast(r.ok ? "idle motions saved — live now" : (r.error||"failed"), r.ok);
   refreshIdle();
 };
 
