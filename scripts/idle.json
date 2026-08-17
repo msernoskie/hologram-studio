@@ -1,5 +1,6 @@
 {
   "idle": true,
+  "subtitles": true,
   "motions": [
     {"on": true, "part": "torso", "amp": 0.5, "len": 0.35, "bursts": [1, 3],
      "min_gap": 4, "max_gap": 9},

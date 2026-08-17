@@ -58,6 +58,7 @@ EMOTE_SH = os.path.join(HERE, "emote.sh")
 HANDS_OFF_FLAG = os.path.join(HERE, ".hands_off")   # exists = hand gestures disabled
                                                     # (toggled by gesture_ctl.sh hands on|off;
                                                     # face tracking is unaffected)
+PROACTIVE_FILE = os.path.join(HERE, "proactive.json")
 DBG = "http://localhost:9222"
 
 # ---- tuning knobs -----------------------------------------------------------
@@ -304,6 +305,43 @@ def gesture_map():
     return _gmap["map"]
 
 
+# ---- proactive greeting -----------------------------------------------------
+# When your face reappears after a long absence, she greets you unprompted.
+# The greeting goes through the FULL conversation pipeline (window.__ghostSay
+# types into the frontend's chat box), so she answers in character, fires her
+# emotion expressions, and it lands in chat history like any exchange.
+DEFAULT_PROACTIVE = {
+    "on": True,
+    "away_secs": 300.0,   # how long you must be gone for a return to count
+    "prompt": "(The user just walked back up to you after being away. Greet "
+              "them warmly, in character, in one or two short sentences.)",
+}
+GREET_SETTLE = 2.0        # face must be back this long before greeting (a
+                          # walk-past shouldn't trigger it)
+_proactive = {"mtime": None, "conf": DEFAULT_PROACTIVE}
+
+
+def proactive_conf():
+    """Current proactive-greeting config; hot-reloads when the web UI saves."""
+    try:
+        mt = os.path.getmtime(PROACTIVE_FILE)
+    except OSError:
+        return _proactive["conf"]
+    if mt != _proactive["mtime"]:
+        _proactive["mtime"] = mt
+        try:
+            with open(PROACTIVE_FILE, encoding="utf-8") as fh:
+                c = json.load(fh)
+            _proactive["conf"] = {**DEFAULT_PROACTIVE,
+                                  **{k: c[k] for k in DEFAULT_PROACTIVE if k in c}}
+            print(f"[gesture] proactive greeting: "
+                  f"{'on' if _proactive['conf']['on'] else 'off'}, "
+                  f"away >= {_proactive['conf']['away_secs']:.0f}s")
+        except Exception as e:
+            print(f"[gesture] bad proactive.json ({e}) — keeping previous config")
+    return _proactive["conf"]
+
+
 def play_webui_sequence(name):
     """Trigger a web-UI emote sequence over HTTP (server plays it in its own
     thread, so this returns immediately). Harmless no-op if the UI is down."""
@@ -512,6 +550,9 @@ def main():
     active = None
     face = None          # cached face box (raw normalised x0,y0,x1,y1)
     face_at = 0.0
+    face_prev = False    # was a face present last frame (greeting transitions)
+    absent_since = None  # when the face left; None = present or never seen
+    greet_at = None      # face returned after a long absence at this time
     hands_on = not os.path.exists(HANDS_OFF_FLAG)
     t_start = time.monotonic()
     frames = 0
@@ -541,6 +582,28 @@ def main():
                     face, face_at = box, now
             if face and now - face_at > FACE_TTL:
                 face = None
+
+            # ---- proactive greeting ----
+            # Fire once when the face returns after a long absence and stays
+            # for GREET_SETTLE (a walk-past shouldn't count). A sidecar restart
+            # never greets: absent_since only arms on a present->absent
+            # transition observed by THIS run.
+            pgc = proactive_conf()
+            if face:
+                if absent_since is not None:
+                    if pgc["on"] and now - absent_since >= float(pgc["away_secs"]):
+                        greet_at = now
+                    absent_since = None
+                if greet_at is not None and now - greet_at >= GREET_SETTLE:
+                    greet_at = None
+                    ok = cdp.eval("window.__ghostSay(%s)" % json.dumps(pgc["prompt"]))
+                    print("[gesture] proactive greeting fired"
+                          + ("" if ok else " (chat box not ready — skipped)"))
+            else:
+                if face_prev:
+                    absent_since = now
+                greet_at = None
+            face_prev = face is not None
 
             # Hand-gesture mode is toggled LIVE by `gesture_ctl.sh hands on|off`
             # (a flag file, checked every frame — a stat costs nothing at 14fps).

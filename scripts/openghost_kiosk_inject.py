@@ -83,6 +83,18 @@ SETUP_JS = """(()=>{
 # below and live-edited by the web UI's "Idle motions" tab):
 #   idle:false  = no figure-8 sway and no part motions (gaze unaffected)
 #   motions: [{on, part, amp 0..1, len s/pulse, bursts [ints], min_gap, max_gap}]
+#   subtitles:false = hide the hologram subtitle overlay
+#
+# Also installs two chat hooks:
+#   window.__ghostSay(text) — types text into the frontend's hidden chat box
+#     (React native-setter + Enter) so it runs the FULL conversation pipeline:
+#     LLM -> persona -> [emotion] tags -> expressions -> history. Used by the
+#     web UI's Chat tab and the sidecar's proactive greeting.
+#   subtitle overlay — mirrors the newest AI chat message (.cs-message--incoming,
+#     which the ghost CSS hides with the rest of the UI) into a styled #ghost-subtitle
+#     line at the bottom of the display, fading out after she finishes. With no
+#     speaker attached this is how her replies reach the viewer. The display is
+#     pre-flipped for the beam splitter, so text reads correctly in the reflection.
 IDLE_JS = """(()=>{
   if(typeof getLive2DManager!=="function") return "no-manager";
   if(window.__ghostIdleRAF) cancelAnimationFrame(window.__ghostIdleRAF);
@@ -102,6 +114,33 @@ IDLE_JS = """(()=>{
     sway:[["ParamBodyAngleZ0",0.4],["ParamBodyAngleZ",0.4],["ParamAngleZ",0.15]],
     hips:[["ParamHipAngleZ0",0.5]]
   };
+  // Chat injection: the frontend's chat textarea still works while hidden.
+  // React ignores plain .value writes, so use the native setter + input event,
+  // then Enter to send. Returns false if the box isn't there (page loading).
+  window.__ghostSay=function(text){
+    const ta=document.querySelector("textarea.chakra-textarea");
+    if(!ta) return false;
+    const set=Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,"value").set;
+    set.call(ta,text);
+    ta.dispatchEvent(new Event("input",{bubbles:true}));
+    ta.dispatchEvent(new KeyboardEvent("keydown",
+      {key:"Enter",code:"Enter",keyCode:13,bubbles:true}));
+    setTimeout(()=>{set.call(ta,"");ta.dispatchEvent(new Event("input",{bubbles:true}));},50);
+    return true;
+  };
+  // Subtitle overlay element (idempotent).
+  let subEl=document.getElementById("ghost-subtitle");
+  if(!subEl){
+    subEl=document.createElement("div");
+    subEl.id="ghost-subtitle";
+    subEl.style.cssText="position:fixed;left:5%;right:5%;bottom:4%;z-index:99999;"+
+      "text-align:center;color:#fff;font:600 21px/1.35 system-ui,sans-serif;"+
+      "text-shadow:0 0 6px #000,0 0 12px #000,0 2px 4px #000;pointer-events:none;"+
+      "opacity:0;transition:opacity .6s;white-space:pre-wrap;";
+    document.body.appendChild(subEl);
+  }
+  const sub={last:"",shownAt:0};
   function tick(now){
     let md=null; try{md=mgr._models.at(0);}catch(e){}
     if(md){
@@ -201,6 +240,30 @@ IDLE_JS = """(()=>{
           }
           orig();
         };
+      }
+    }
+    // Subtitle mirror: every ~0.5s pick up the newest AI message from the
+    // hidden chat list; keep it visible while she's "speaking" and for a
+    // readable linger afterwards. Cheap: one query 2x/sec.
+    if(!sub.nextPoll||now>=sub.nextPoll){
+      sub.nextPoll=now+500;
+      const IC2=window.__ghostIdleCfg||{};
+      if(IC2.subtitles===false){ subEl.style.opacity=0; }
+      else{
+        const msgs=document.querySelectorAll(".cs-message--incoming");
+        const mEl=msgs.length?msgs[msgs.length-1]:null;
+        // strip [emotion] tags (the expression mechanism, not for reading) and
+        // re-space the sentence chunks the frontend concatenates together
+        const lastM=mEl?((mEl.querySelector(".cs-message__content")||mEl).textContent||"")
+          .replace(/\\[[a-z_]+\\]/gi,"").replace(/([.!?,])(?=[A-Za-z])/g,"$1 ")
+          .replace(/\\s+/g," ").trim():"";
+        if(lastM&&lastM!==sub.last){
+          sub.last=lastM; sub.shownAt=now;
+          subEl.textContent=lastM; subEl.style.opacity=1;
+        }
+        const talkingNow=md&&(md._lastLipSyncValue||0)>0.03;
+        if(sub.shownAt&&!talkingNow&&now-sub.shownAt>9000) subEl.style.opacity=0;
+        if(talkingNow&&sub.last) subEl.style.opacity=1;
       }
     }
     window.__ghostIdleRAF=requestAnimationFrame(tick);

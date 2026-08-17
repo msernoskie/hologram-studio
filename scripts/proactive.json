@@ -1,0 +1,5 @@
+{
+  "on": true,
+  "away_secs": 300,
+  "prompt": "(The user just walked back up to you after being away. Greet them warmly, in character, in one or two short sentences.)"
+}

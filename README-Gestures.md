@@ -286,6 +286,27 @@ Three panels:
   labeled sequences ("greeting", "victory dance"). Play/edit/delete from the list; playback
   always lands back on neutral.
 
+The header has tabs; besides the main **Studio** view and **Idle motions** (see above):
+
+- **Chat tab** — talk to her from the browser. Messages are typed into the hologram's
+  own (hidden) chat box, so they run Open-LLM-VTuber's full pipeline: her LLM + persona
+  reply, emotion tags fire her expressions on the display, and everything lands in the
+  same chat history voice would use. The tab shows the live conversation (polled), and
+  the conversation dropdown browses past history files (stored by the backend under
+  `Open-LLM-VTuber/chat_history/<conf_uid>/`).
+- **Subtitles** — her replies are mirrored onto the hologram itself as a subtitle line
+  at the bottom of the display (emotion tags stripped), fading out after she finishes.
+  Until a speaker is attached this is how she "speaks". Toggle in the Chat tab
+  (stored as `subtitles` in `scripts/idle.json`).
+- **Proactive greeting** — when the camera sees your face again after you've been away
+  (default 5 min) and you stay ~2 s, the gesture sidecar sends a hidden instruction
+  through the chat pipeline and she greets you in character, unprompted. Configure
+  on/off, the away threshold and the instruction in the Chat tab
+  (`scripts/proactive.json`, hot-reloaded — a sidecar restart never greets by itself).
+
+Chat endpoints: `POST /api/chat/send {"text": …}`, `GET /api/chat/current`,
+`GET /api/chat/histories`, `GET /api/chat/history?id=…`, `GET/POST /api/proactive`.
+
 **For AI integration**, the server is itself an API (all JSON):
 
 ```

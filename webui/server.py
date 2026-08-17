@@ -26,7 +26,7 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
@@ -64,13 +64,69 @@ def clean_motion(m):
 
 
 def idle_state():
-    conf = {"idle": True, "motions": DEFAULT_MOTIONS}
+    conf = {"idle": True, "subtitles": True, "motions": DEFAULT_MOTIONS}
     try:
         with open(IDLE_JSON, encoding="utf-8") as fh:
             saved = json.load(fh)
         conf["idle"] = bool(saved.get("idle", True))
+        conf["subtitles"] = bool(saved.get("subtitles", True))
         if isinstance(saved.get("motions"), list):
             conf["motions"] = [clean_motion(m) for m in saved["motions"][:8]]
+    except Exception:
+        pass
+    return conf
+
+
+# ---- chat (through the kiosk's own session) ---------------------------------
+PROACTIVE_JSON = os.path.join(SCRIPTS, "proactive.json")
+PROACTIVE_DEFAULTS = {
+    "on": True, "away_secs": 300.0,
+    "prompt": "(The user just walked back up to you after being away. Greet "
+              "them warmly, in character, in one or two short sentences.)",
+}
+
+
+def conf_uid():
+    """conf_uid from conf.yaml — the chat_history subdir the backend writes."""
+    with open(os.path.join(OLV, "conf.yaml"), encoding="utf-8") as fh:
+        for line in fh:
+            if "conf_uid:" in line and "'" in line:
+                return line.split("'")[1]
+    return None
+
+
+def history_dir():
+    uid = conf_uid()
+    return os.path.join(OLV, "chat_history", uid) if uid else None
+
+
+def read_history(path):
+    """[{role, content, timestamp}] from one backend history file."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            entries = json.load(fh)
+    except Exception:
+        return []
+    return [{"role": e.get("role"), "content": e.get("content", ""),
+             "timestamp": e.get("timestamp", "")}
+            for e in entries if e.get("role") in ("human", "ai")]
+
+
+def history_files():
+    """History file paths for the active character, newest first."""
+    d = history_dir()
+    if not d or not os.path.isdir(d):
+        return []
+    return sorted((os.path.join(d, f) for f in os.listdir(d)
+                   if f.endswith(".json")), reverse=True)
+
+
+def proactive_state():
+    conf = dict(PROACTIVE_DEFAULTS)
+    try:
+        with open(PROACTIVE_JSON, encoding="utf-8") as fh:
+            saved = json.load(fh)
+        conf.update({k: saved[k] for k in PROACTIVE_DEFAULTS if k in saved})
     except Exception:
         pass
     return conf
@@ -421,6 +477,38 @@ class Handler(BaseHTTPRequestHandler):
             self._json({**idle_state(), "parts": MOTION_PARTS})
             return
 
+        if path == "/api/chat/current":
+            files = history_files()
+            self._json({"model": conf_model(),
+                        "id": os.path.basename(files[0]) if files else None,
+                        "messages": read_history(files[0]) if files else []})
+            return
+
+        if path == "/api/chat/histories":
+            out = []
+            for p in history_files()[:30]:
+                msgs = read_history(p)
+                out.append({"id": os.path.basename(p),
+                            "count": len(msgs),
+                            "preview": (msgs[0]["content"][:80] if msgs else "(empty)")})
+            self._json({"histories": out})
+            return
+
+        if path == "/api/chat/history":
+            hid = os.path.basename(  # basename() forecloses path traversal
+                (parse_qs(urlparse(self.path).query).get("id") or [""])[0])
+            d = history_dir()
+            p = os.path.join(d, hid) if d and hid.endswith(".json") else None
+            if not p or not os.path.isfile(p):
+                self._json({"error": "no such history"}, 404)
+                return
+            self._json({"id": hid, "messages": read_history(p)})
+            return
+
+        if path == "/api/proactive":
+            self._json(proactive_state())
+            return
+
         self._json({"error": "not found"}, 404)
 
     # ---- POST ----
@@ -648,6 +736,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if "idle" in body:
                     conf["idle"] = bool(body["idle"])
+                if "subtitles" in body:
+                    conf["subtitles"] = bool(body["subtitles"])
                 if "motions" in body:
                     if not isinstance(body["motions"], list):
                         raise ValueError("motions must be a list")
@@ -662,6 +752,44 @@ class Handler(BaseHTTPRequestHandler):
                 os.replace(tmp, IDLE_JSON)
             cdp_js("window.__ghostIdleCfg=%s;'ok'" % json.dumps(conf))
             self._json({"ok": True, **conf})
+            return
+
+        if path == "/api/chat/send":
+            # Types into the kiosk's hidden chat box (window.__ghostSay), so
+            # the message runs the full pipeline in the KIOSK's own session:
+            # LLM -> expressions on the hologram -> subtitle -> history.
+            text = str(body.get("text", "")).strip()
+            if not text:
+                self._json({"error": "empty message"}, 400)
+                return
+            raw = cdp_js("window.__ghostSay ? window.__ghostSay(%s) : 'no-hook'"
+                         % json.dumps(text[:2000]))
+            if raw is None or "no-hook" in str(raw):
+                self._json({"error": "kiosk not reachable (is the hologram "
+                                     "running with the idle loop injected?)"}, 502)
+                return
+            self._json({"ok": True})
+            return
+
+        if path == "/api/proactive":
+            conf = proactive_state()
+            try:
+                if "on" in body:
+                    conf["on"] = bool(body["on"])
+                if "away_secs" in body:
+                    conf["away_secs"] = min(86400.0, max(10.0, float(body["away_secs"])))
+                if "prompt" in body and str(body["prompt"]).strip():
+                    conf["prompt"] = str(body["prompt"]).strip()[:1000]
+            except (TypeError, ValueError) as e:
+                self._json({"error": f"bad value: {e}"}, 400)
+                return
+            with _lock:
+                tmp = PROACTIVE_JSON + ".tmp"
+                with open(tmp, "w") as fh:
+                    json.dump(conf, fh, indent=2)
+                os.replace(tmp, PROACTIVE_JSON)
+            self._json({"ok": True, **conf,
+                        "note": "applies live — the sidecar reloads on change"})
             return
 
         if path == "/api/ai/backend":

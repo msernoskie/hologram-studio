@@ -75,6 +75,15 @@
   .motion { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
             padding:8px 10px; margin:5px 0; background:var(--panel2);
             border-radius:8px; }
+  #chatLog { background:var(--bg); border:1px solid var(--line); border-radius:10px;
+             padding:12px; height:420px; overflow-y:auto; }
+  .msg { max-width:78%; margin:6px 0; padding:8px 12px; border-radius:12px;
+         white-space:pre-wrap; font-size:14px; }
+  .msg.human { margin-left:auto; background:var(--panel2);
+               border:1px solid var(--accent); }
+  .msg.ai { margin-right:auto; background:var(--panel2);
+            border:1px solid var(--accent2); }
+  .msg .who { font-size:11px; color:var(--dim); margin-bottom:2px; }
 </style>
 </head>
 <body>
@@ -82,6 +91,7 @@
   <h1>OpenGhost — Hologram Studio</h1>
   <nav id="tabnav">
     <button class="tab active" data-tab="studio">Studio</button>
+    <button class="tab" data-tab="chat">Chat</button>
     <button class="tab" data-tab="motions">Idle motions</button>
   </nav>
   <span class="sub" id="activeName"></span>
@@ -214,6 +224,40 @@
       sense on 1 finger. Sequences from the panel above are assignable too — a gesture
       can play one. The <b>hold</b> row is the long-press action (default: fist 3 s
       = restore home, the blind panic button).</div>
+  </section>
+
+  <!-- ============ CHAT (own tab) ============ -->
+  <section class="wide" id="chatPanel" style="display:none">
+    <h2>Chat <span id="chatWith" style="text-transform:none; letter-spacing:0"></span></h2>
+    <div class="row2">
+      <label>conversation
+        <select id="chatHistSel" style="max-width:340px"></select></label>
+      <button id="chatLive" class="small">↻ live</button>
+      <span class="hint">Messages go through the hologram's own session — she
+        emotes on the display, subtitles show her reply, and it all lands in
+        the same history as voice chat.</span>
+    </div>
+    <div id="chatLog" style="margin-top:8px"></div>
+    <div class="row2">
+      <input type="text" id="chatText" placeholder="Say something to her…"
+        style="flex:1; min-width:200px">
+      <button id="chatSend" class="primary">Send</button>
+    </div>
+    <div class="row2" style="margin-top:14px">
+      <label><input type="checkbox" id="subsOn"> subtitles on the hologram</label>
+    </div>
+    <div class="row2">
+      <label><input type="checkbox" id="proOn"> greet me when I come back after</label>
+      <label><input type="number" id="proMins" min="0.5" max="1440" step="0.5"
+        style="width:70px"> min</label>
+      <input type="text" id="proPrompt" style="flex:1; min-width:260px"
+        title="the hidden instruction sent on your return">
+      <button id="savePro" class="small">Save greeting</button>
+    </div>
+    <div class="hint">The greeting fires when the camera sees your face again
+      after that long away (and you stay ~2s — walking past doesn't count).
+      It's sent as a hidden instruction through the normal chat pipeline, so
+      she greets you in character.</div>
   </section>
 
   <!-- ============ IDLE MOTIONS (own tab) ============ -->
@@ -634,16 +678,83 @@ $("saveGestures").onclick = async () => {
 };
 
 // ---------- tabs ----------
+let activeTab = "studio";
+const TAB_OF = {motionsPanel: "motions", chatPanel: "chat"};
 function showTab(t) {
+  activeTab = t;
   document.querySelectorAll("main > section").forEach(s => {
-    const isMotions = s.id === "motionsPanel";
-    s.style.display = ((t === "motions") === isMotions) ? "" : "none";
+    s.style.display = ((TAB_OF[s.id] || "studio") === t) ? "" : "none";
   });
   document.querySelectorAll("#tabnav .tab").forEach(b =>
     b.classList.toggle("active", b.dataset.tab === t));
+  if (t === "chat") { refreshChatMeta(); pollChat(true); }
 }
 document.querySelectorAll("#tabnav .tab").forEach(b =>
   b.onclick = () => showTab(b.dataset.tab));
+
+// ---------- chat ----------
+let chatView = "live";          // "live" or a history file id
+let lastLogKey = "";
+function renderChat(msgs) {
+  const key = msgs.length + ":" + (msgs.length ? msgs[msgs.length-1].content : "");
+  if (key === lastLogKey) return;
+  lastLogKey = key;
+  const log = $("chatLog");
+  log.innerHTML = msgs.map(m => `<div class="msg ${m.role}">
+      <div class="who">${m.role === "human" ? "you" : "her"}
+        <span style="opacity:.6">${(m.timestamp||"").replace("T"," ").slice(5,16)}</span></div>
+      <div>${m.content.replace(/\[[a-z_]+\]/gi,"").replace(/\s+/g," ").trim()
+        .replace(/&/g,"&amp;").replace(/</g,"&lt;")}</div></div>`).join("")
+    || `<div class="hint">No messages yet — say something below.</div>`;
+  log.scrollTop = log.scrollHeight;
+}
+async function pollChat(force) {
+  if (activeTab !== "chat" && !force) return;
+  if (chatView === "live") {
+    const r = await api("/api/chat/current");
+    $("chatWith").textContent = r.model ? "— " + r.model : "";
+    renderChat(r.messages || []);
+  }
+}
+async function refreshChatMeta() {
+  const h = await api("/api/chat/histories");
+  $("chatHistSel").innerHTML = `<option value="live">current conversation</option>` +
+    (h.histories||[]).map(x =>
+      `<option value="${x.id}">${x.id.slice(0,16).replace("_"," ")} · ${x.count} msgs · ${
+        x.preview.replace(/</g,"&lt;").slice(0,40)}</option>`).join("");
+  $("chatHistSel").value = chatView === "live" ? "live" : chatView;
+  const idle = await api("/api/idle");
+  $("subsOn").checked = idle.subtitles !== false;
+  const p = await api("/api/proactive");
+  $("proOn").checked = p.on; $("proMins").value = (p.away_secs/60).toFixed(1);
+  $("proPrompt").value = p.prompt;
+}
+$("chatHistSel").onchange = async () => {
+  chatView = $("chatHistSel").value; lastLogKey = "";
+  if (chatView === "live") pollChat(true);
+  else renderChat((await api("/api/chat/history?id=" + encodeURIComponent(chatView))).messages || []);
+};
+$("chatLive").onclick = () => { chatView = "live"; $("chatHistSel").value = "live";
+  lastLogKey = ""; pollChat(true); };
+async function sendChat() {
+  const t = $("chatText").value.trim();
+  if (!t) return;
+  $("chatText").value = "";
+  chatView = "live"; $("chatHistSel").value = "live";
+  const r = await api("/api/chat/send", {text: t});
+  if (!r.ok) toast(r.error || "send failed", false);
+  setTimeout(() => pollChat(true), 800);
+}
+$("chatSend").onclick = sendChat;
+$("chatText").addEventListener("keydown", e => { if (e.key === "Enter") sendChat(); });
+$("subsOn").onchange = async () =>
+  { await api("/api/idle", {subtitles: $("subsOn").checked}); };
+$("savePro").onclick = async () => {
+  const r = await api("/api/proactive", {on: $("proOn").checked,
+    away_secs: +$("proMins").value * 60, prompt: $("proPrompt").value});
+  toast(r.ok ? "greeting saved — live now" : (r.error||"failed"), r.ok);
+};
+setInterval(() => pollChat(false), 3000);
 
 // ---------- idle motions ----------
 const PART_LABELS = {torso:"torso (bounce)", head:"head (nod)", chest:"chest",
