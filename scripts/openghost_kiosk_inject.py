@@ -124,30 +124,41 @@ IDLE_JS = """(()=>{
           md._dragManager.set(x,y);
         }
       }
-      // Parallax rotation: wrap this model instance's update() once, so the
-      // parameter adds land AFTER motions/expressions/physics and BEFORE draw.
-      // Per-frame check (not a global flag) so a model switch re-wraps the new
-      // instance automatically. Cancels the dragManager's head/body drive
-      // (dx*30 etc. — the stock multipliers) and substitutes the counter-
-      // rotation; eyes are left on the viewer unless cfg.eyes is 0.
-      if(md.update&&!md.__ghostParWrap){
-        md.__ghostParWrap=true;
-        const orig=md.update.bind(md);
-        md.update=function(){
+      // Parallax rotation: wrap the CORE model's update() — the single call
+      // that commits the parameter buffer to the renderer at the END of
+      // LAppModel.update(). Adds must land immediately BEFORE that commit:
+      // any later and they render never (next frame's loadParameters() wipes
+      // them first — learned the hard way). Per-frame check (not a global
+      // flag) so a model switch re-wraps the new instance automatically.
+      // Cancels the dragManager's head/body drive (dx*30 etc. — the stock
+      // multipliers) and substitutes the counter-rotation.
+      const cm0=md._model;
+      if(cm0&&cm0.update&&!cm0.__ghostParWrap){
+        cm0.__ghostParWrap=true;
+        const orig=cm0.update.bind(cm0);
+        cm0.update=function(){
+          const P=window.__ghostPar;
+          if(P&&P.cfg&&P.b>=0.01){
+            const c=P.cfg, dm=md._dragManager;
+            const dx=dm?dm.getX():0, dy=dm?dm.getY():0;
+            const lim=c.maxd||25;
+            const yaw=Math.max(-lim,Math.min(lim,-P.x*c.rot));
+            const pit=Math.max(-lim,Math.min(lim,-P.y*c.rot*c.ry));
+            const add=(id,v)=>{try{cm0.addParameterValueById(id,v*P.b);}catch(e){}};
+            add(md._idParamAngleX, yaw-dx*30);
+            add(md._idParamAngleY, pit-dy*30);
+            add(md._idParamAngleZ, yaw*pit*-0.033-dx*dy*-30);
+            add(md._idParamBodyAngleX, yaw*c.body-dx*10);
+            if(c.eyes){
+              // Eye contact must survive the counter-rotation: the head just
+              // turned yaw/pit degrees AWAY from the viewer, so the eyeballs
+              // deflect the opposite way by the same angle (param 1 ~ 30 deg,
+              // Cubism clamps to the model's range) — gaze stays ON the face.
+              add(md._idParamEyeBallX, -yaw/30);
+              add(md._idParamEyeBallY, -pit/30);
+            }else{add(md._idParamEyeBallX,-dx);add(md._idParamEyeBallY,-dy);}
+          }
           orig();
-          const P=window.__ghostPar; if(!P||!P.cfg||P.b<0.01) return;
-          const c=P.cfg, cm=md._model, dm=md._dragManager;
-          if(!cm) return;
-          const dx=dm?dm.getX():0, dy=dm?dm.getY():0;
-          const lim=c.maxd||25;
-          const yaw=Math.max(-lim,Math.min(lim,-P.x*c.rot));
-          const pit=Math.max(-lim,Math.min(lim,-P.y*c.rot*c.ry));
-          const add=(id,v)=>{try{cm.addParameterValueById(id,v*P.b);}catch(e){}};
-          add(md._idParamAngleX, yaw-dx*30);
-          add(md._idParamAngleY, pit-dy*30);
-          add(md._idParamAngleZ, yaw*pit*-0.033-dx*dy*-30);
-          add(md._idParamBodyAngleX, yaw*c.body-dx*10);
-          if(!c.eyes){add(md._idParamEyeBallX,-dx);add(md._idParamEyeBallY,-dy);}
         };
       }
     }
