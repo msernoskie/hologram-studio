@@ -27,8 +27,7 @@ web UI's *Add model*. Third-party models must not be committed here.
 ## What's here
 
 - `scripts/live2d_ghost.sh` — kiosk launcher (mirrored display, ghost look, autostart)
-- `scripts/gesture_ctl.py` — camera sidecar: face tracking, head-coupled 3D parallax
-  (portalgraph effect), and remappable finger-count gestures
+- `scripts/gesture_ctl.py` — camera sidecar: face tracking + remappable finger-count gestures
 - `webui/` — Hologram Studio web UI on `:8800` (see `README-Gestures.md`)
 - `scripts/add_model.py`, `scan_expressions.py` — model install + expression registration
 - `README-Live2D.md`, `README-Gestures.md` — full documentation

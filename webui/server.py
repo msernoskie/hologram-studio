@@ -35,16 +35,6 @@ SCRIPTS = os.path.join(HOME, "OpenGhost", "scripts")
 LIBRARY = os.path.join(HERE, "library.json")
 GESTURE_MAP = os.path.join(SCRIPTS, "gesture_map.json")
 HANDS_OFF_FLAG = os.path.join(SCRIPTS, ".hands_off")
-PARALLAX_JSON = os.path.join(SCRIPTS, "parallax.json")
-PARALLAX_OFF_FLAG = os.path.join(SCRIPTS, ".parallax_off")
-# Head-coupled 3D defaults — keep in sync with DEFAULT_PARALLAX in
-# gesture_ctl.py (each side owns its own copy, like the gesture map does).
-PARALLAX_DEFAULTS = {
-    "rot_gain": 0.9, "rot_y_scale": 0.7, "body_scale": 0.35, "max_deg": 25.0,
-    "trans_gain": 0.004, "trans_y_scale": 0.6,
-    "dolly": False, "dolly_gain": 0.15, "ref_face_width": 0.18,
-    "eye_contact": True, "invert_x": False, "invert_y": False, "ease": 0.25,
-}
 GESTURE_ACTIONS = ["none", "zoom_in", "zoom_out", "nudge", "gaze",
                    "emote_next", "emote_off", "home"]
 PORT = 8800
@@ -388,17 +378,6 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
-        if path == "/api/parallax":
-            conf = dict(PARALLAX_DEFAULTS)
-            try:
-                with open(PARALLAX_JSON, encoding="utf-8") as fh:
-                    saved = json.load(fh)
-                conf.update({k: saved[k] for k in PARALLAX_DEFAULTS if k in saved})
-            except Exception:
-                pass
-            self._json({"on": not os.path.exists(PARALLAX_OFF_FLAG), "conf": conf})
-            return
-
         self._json({"error": "not found"}, 404)
 
     # ---- POST ----
@@ -617,45 +596,6 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 open(HANDS_OFF_FLAG, "w").close()
             self._json({"ok": True, "hands_on": not os.path.exists(HANDS_OFF_FLAG)})
-            return
-
-        if path == "/api/parallax":
-            # {"on": bool} toggles the flag file; {"conf": {...}} rewrites
-            # parallax.json (validated + clamped) — the sidecar hot-reloads it.
-            if "on" in body:
-                if body.get("on"):
-                    try:
-                        os.remove(PARALLAX_OFF_FLAG)
-                    except OSError:
-                        pass
-                else:
-                    open(PARALLAX_OFF_FLAG, "w").close()
-            if "conf" in body:
-                c = body.get("conf") or {}
-                out = dict(PARALLAX_DEFAULTS)
-                clamps = {"rot_gain": (0.0, 3.0), "rot_y_scale": (0.0, 2.0),
-                          "body_scale": (0.0, 1.0), "max_deg": (5.0, 45.0),
-                          "trans_gain": (0.0, 0.05), "trans_y_scale": (0.0, 2.0),
-                          "dolly_gain": (0.0, 0.5), "ref_face_width": (0.05, 0.5),
-                          "ease": (0.05, 0.6)}
-                try:
-                    for k, (lo, hi) in clamps.items():
-                        if k in c:
-                            out[k] = min(hi, max(lo, float(c[k])))
-                    for k in ("dolly", "eye_contact", "invert_x", "invert_y"):
-                        if k in c:
-                            out[k] = bool(c[k])
-                except (TypeError, ValueError) as e:
-                    self._json({"error": f"bad value: {e}"}, 400)
-                    return
-                with _lock:
-                    tmp = PARALLAX_JSON + ".tmp"
-                    with open(tmp, "w") as fh:
-                        json.dump(out, fh, indent=2)
-                    os.replace(tmp, PARALLAX_JSON)
-            self._json({"ok": True,
-                        "on": not os.path.exists(PARALLAX_OFF_FLAG),
-                        "note": "applies live — the sidecar reloads on change"})
             return
 
         if path == "/api/ai/backend":

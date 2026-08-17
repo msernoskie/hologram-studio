@@ -58,8 +58,6 @@ EMOTE_SH = os.path.join(HERE, "emote.sh")
 HANDS_OFF_FLAG = os.path.join(HERE, ".hands_off")   # exists = hand gestures disabled
                                                     # (toggled by gesture_ctl.sh hands on|off;
                                                     # face tracking is unaffected)
-PARALLAX_FILE = os.path.join(HERE, "parallax.json")
-PARALLAX_OFF_FLAG = os.path.join(HERE, ".parallax_off")  # exists = head-coupled 3D off
 DBG = "http://localhost:9222"
 
 # ---- tuning knobs -----------------------------------------------------------
@@ -92,10 +90,6 @@ ONESHOT_COOLDOWN = 4.0  # seconds between one-shot actions (home / sequences)
                         # mapped directly to a count. The HOLD action's timing
                         # lives in gesture_map.json instead.
 LOST_GRACE = 0.25       # seconds a gesture may drop out before it counts as released
-CAM_HFOV, CAM_VFOV = 66.0, 41.0  # Pi Camera Module 3 (standard) field of view.
-                        # Converting face offsets to DEGREES here is what keeps
-                        # the parallax response equal on both axes despite the
-                        # 4:3 sensor feeding a 1:1 display.
 
 
 # ---- CDP --------------------------------------------------------------------
@@ -310,46 +304,6 @@ def gesture_map():
     return _gmap["map"]
 
 
-# ---- head-coupled parallax config -------------------------------------------
-# Same hot-reload idiom as gesture_map(): the web UI writes parallax.json
-# atomically, we notice by mtime, and bad JSON keeps the previous config.
-DEFAULT_PARALLAX = {
-    "rot_gain": 0.9,        # model degrees of counter-rotation per viewer degree
-    "rot_y_scale": 0.7,     # vertical rotation as a fraction of horizontal
-    "body_scale": 0.35,     # body yaw as a fraction of head yaw
-    "max_deg": 25.0,        # clamp on the injected head angles
-    "trans_gain": 0.004,    # screen units of translation per viewer degree
-    "trans_y_scale": 0.6,   # vertical translation as a fraction of horizontal
-    "dolly": False,         # scale with viewer distance (subtle; off by default)
-    "dolly_gain": 0.15,
-    "ref_face_width": 0.18, # normalised face width at your usual standing spot
-    "eye_contact": True,    # eyes keep tracking you while the head counter-rotates
-    "invert_x": False,      # parallax-only sign flips (the mirrored display makes
-    "invert_y": False,      # signs a calibration matter, not a derivation)
-    "ease": 0.25,           # page-side per-frame smoothing k
-}
-_pconf = {"mtime": None, "conf": DEFAULT_PARALLAX}
-
-
-def parallax_conf():
-    """Current parallax tuning; hot-reloads when the web UI rewrites the file."""
-    try:
-        mt = os.path.getmtime(PARALLAX_FILE)
-    except OSError:
-        return _pconf["conf"]
-    if mt != _pconf["mtime"]:
-        _pconf["mtime"] = mt
-        try:
-            with open(PARALLAX_FILE, encoding="utf-8") as fh:
-                c = json.load(fh)
-            _pconf["conf"] = {**DEFAULT_PARALLAX,
-                              **{k: c[k] for k in DEFAULT_PARALLAX if k in c}}
-            print(f"[gesture] parallax config loaded: {_pconf['conf']}")
-        except Exception as e:
-            print(f"[gesture] bad parallax.json ({e}) — keeping previous config")
-    return _pconf["conf"]
-
-
 def play_webui_sequence(name):
     """Trigger a web-UI emote sequence over HTTP (server plays it in its own
     thread, so this returns immediately). Harmless no-op if the UI is down."""
@@ -410,36 +364,21 @@ STEP_JS = """(()=>{const f=window.__ghostFrame; if(!f) return null;
   return JSON.stringify(f);})()"""
 
 
-def look(cdp, nx, ny, view=None):
-    """Point the model's gaze at a normalised (0..1) spot in the camera's view.
-
-    `view` piggybacks the head-coupled parallax payload on the SAME eval —
-    a second CDP round-trip per frame would roughly halve the loop fps. When
-    it is None (no face / parallax off / peace-sign gaze) the page-side
-    __ghostView simply goes stale and the effect eases itself out."""
+def look(cdp, nx, ny):
+    """Point the model's gaze at a normalised (0..1) spot in the camera's view."""
     gx = clamp((nx - 0.5) * 2 * GAZE_GAIN, -1.0, 1.0)
     gy = clamp((ny - 0.5) * 2 * GAZE_GAIN, -1.0, 1.0)
-    js = "window.__ghostGaze={x:%f,y:%f,t:performance.now()};" % (gx, gy)
-    if view is not None:
-        js += ("window.__ghostView=%s;window.__ghostView.t=performance.now();"
-               % json.dumps(view))
-    cdp.eval(js + "0")
+    cdp.eval("window.__ghostGaze={x:%f,y:%f,t:performance.now()}" % (gx, gy))
 
 
 def nearest_face(detector, rgb, ts_ms):
-    """LARGEST face in view as (box, (ax, ay), width), or None.
-
-    box    = raw normalised (x0, y0, x1, y1)
-    ax, ay = parallax anchor: the eye midpoint from BlazeFace's keypoints when
-             available (the box centre jitters with chin/hair detection; the
-             eyes ARE the viewpoint), else the box centre
-    width  = normalised box width — the cheap distance proxy for the dolly
+    """Box of the LARGEST face in view as raw normalised (x0, y0, x1, y1), or None.
 
     Largest == closest, which at a desk is reliably you. Picking a specific
     person by identity would need a face-embedding model and an enrollment
     step; box area is the cheap approximation that works for one user.
 
-    Raw (un-mirrored) coordinates, because the box is also used to veto hand
+    Raw (un-mirrored) coordinates, because this box is also used to veto hand
     detections that land on the face — that comparison has to happen in image
     space, before any display-mirroring is applied."""
     try:
@@ -453,19 +392,12 @@ def nearest_face(detector, rgb, ts_ms):
         b = d.bounding_box
         a = b.width * b.height
         if a > area:
-            biggest, area = d, a
+            biggest, area = b, a
     if biggest is None:
         return None
-    b = biggest.bounding_box
-    box = (b.origin_x / CAM_W, b.origin_y / CAM_H,
-           (b.origin_x + b.width) / CAM_W, (b.origin_y + b.height) / CAM_H)
-    ax, ay = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-    try:  # keypoints 0/1 = right/left eye, already normalised
-        kps = biggest.keypoints
-        ax, ay = (kps[0].x + kps[1].x) / 2, (kps[0].y + kps[1].y) / 2
-    except Exception:
-        pass
-    return box, (ax, ay), box[2] - box[0]
+    return (biggest.origin_x / CAM_W, biggest.origin_y / CAM_H,
+            (biggest.origin_x + biggest.width) / CAM_W,
+            (biggest.origin_y + biggest.height) / CAM_H)
 
 
 def inside_face(lms, face):
@@ -578,8 +510,6 @@ def main():
     last_seen = 0.0
     active = None
     face = None          # cached face box (raw normalised x0,y0,x1,y1)
-    face_anchor = None   # eye-midpoint anchor for parallax (raw normalised)
-    face_w = 0.0         # normalised face width — distance proxy
     face_at = 0.0
     hands_on = not os.path.exists(HANDS_OFF_FLAG)
     t_start = time.monotonic()
@@ -605,10 +535,9 @@ def main():
             # face. Detection runs every FACE_EVERY frames; the box is cached in
             # between, and expires so a stale one can't veto a real hand.
             if face_det and frames % FACE_EVERY == 0:
-                found = nearest_face(face_det, rgb, int((now - t_start) * 1000))
-                if found:
-                    face, face_anchor, face_w = found
-                    face_at = now
+                box = nearest_face(face_det, rgb, int((now - t_start) * 1000))
+                if box:
+                    face, face_at = box, now
             if face and now - face_at > FACE_TTL:
                 face = None
 
@@ -691,41 +620,14 @@ def main():
             # otherwise she watches the face found above, and only falls back to
             # the idle sway when the room is empty.
             if action == "gaze":
-                look(cdp, hx, hy)        # no view payload — parallax eases out
+                look(cdp, hx, hy)
             elif face:
                 cx, cy = (face[0] + face[2]) / 2, (face[1] + face[3]) / 2
                 fx = (1.0 - cx) if args.invert_x else cx
                 fy = cy if args.invert_y else (1.0 - cy)
-                # Head-coupled parallax: viewer's angle off the camera axis in
-                # DEGREES (mirror-corrected the same way as gaze so both share
-                # a frame, then parallax.json's invert flags calibrate sign),
-                # plus a distance term from face width. Gains ride along so the
-                # page never needs its own config plumbing.
-                view = None
-                if not os.path.exists(PARALLAX_OFF_FLAG):
-                    pc = parallax_conf()
-                    pax, pay = face_anchor
-                    px = (1.0 - pax) if args.invert_x else pax
-                    py = pay if args.invert_y else (1.0 - pay)
-                    sx = -1.0 if pc["invert_x"] else 1.0
-                    sy = -1.0 if pc["invert_y"] else 1.0
-                    ref = max(0.02, float(pc["ref_face_width"]))
-                    view = {
-                        "x": round((px - 0.5) * CAM_HFOV * sx, 2),
-                        "y": round((py - 0.5) * CAM_VFOV * sy, 2),
-                        "z": round(clamp((face_w - ref) / ref, -0.8, 1.5), 3),
-                        "cfg": {"rot": pc["rot_gain"], "ry": pc["rot_y_scale"],
-                                "body": pc["body_scale"], "maxd": pc["max_deg"],
-                                "tg": pc["trans_gain"], "ty": pc["trans_y_scale"],
-                                "dolly": pc["dolly_gain"] if pc["dolly"] else 0,
-                                "eyes": 1 if pc["eye_contact"] else 0,
-                                "k": pc["ease"]},
-                    }
-                look(cdp, fx, fy, view)
+                look(cdp, fx, fy)
                 if args.debug and frames % 30 == 0:
-                    print(f"[face] ({fx:.2f},{fy:.2f}) w={face_w:.3f}"
-                          + (f" view=({view['x']:+.1f},{view['y']:+.1f},{view['z']:+.2f})"
-                             if view else " parallax=off"))
+                    print(f"[face] ({fx:.2f},{fy:.2f})")
 
             # ---- ONE-SHOT actions (cooldown-gated so a held hand fires once) ----
             def restore_home():
