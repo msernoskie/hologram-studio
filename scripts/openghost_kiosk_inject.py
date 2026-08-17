@@ -56,6 +56,17 @@ SETUP_JS = """(()=>{
 # and accessories follow) -> a soft alive bob. Works for models with no baked
 # motions (e.g. goth_mofu). Pauses while _lastLipSyncValue shows she's speaking,
 # so it never fights lip-sync during a conversation. Idempotent (cancels prior loop).
+#
+# Also hosts the head-coupled parallax ("portalgraph") consumer: gesture_ctl.py
+# publishes window.__ghostView = {x,y,z,cfg,t} (viewer degrees off the camera
+# axis + tuning) at ~14Hz; this loop eases it at 60fps and applies
+#   - translation/dolly to the model MATRIX only (never __ghostFrame, which is
+#     the persisted framing truth — so parallax can't leak into framing.json)
+#   - counter-rotation via post-update parameter adds (a wrapper on md.update),
+#     cancelling the dragManager's head/body drive and replacing it with the
+#     opposite-of-viewer angle, while the EYES keep following you (eye contact)
+# A blend factor b eases the whole effect in/out on data freshness, so no-face,
+# peace-sign gaze, and parallax-off all melt back to stock behavior.
 IDLE_JS = """(()=>{
   if(typeof getLive2DManager!=="function") return "no-manager";
   if(window.__ghostIdleRAF) cancelAnimationFrame(window.__ghostIdleRAF);
@@ -63,6 +74,16 @@ IDLE_JS = """(()=>{
   const t0=performance.now();
   function tick(now){
     let md=null; try{md=mgr._models.at(0);}catch(e){}
+    // Eased parallax state (shared with the update-wrapper below).
+    if(!window.__ghostPar) window.__ghostPar={x:0,y:0,z:0,b:0,cfg:null};
+    const P=window.__ghostPar, gv=window.__ghostView;
+    const pfresh=!!(gv&&now-gv.t<600);
+    if(pfresh) P.cfg=gv.cfg;
+    const pk=(P.cfg&&P.cfg.k)||0.25;
+    P.b+=((pfresh?1:0)-P.b)*pk;
+    P.x+=((pfresh?gv.x:0)-P.x)*pk;
+    P.y+=((pfresh?gv.y:0)-P.y)*pk;
+    P.z+=((pfresh?gv.z:0)-P.z)*pk;
     if(md){
       // Persisted framing (scale/pos): enforced every frame so it survives the
       // frontend's own layout and never drifts. window.__ghostFrame is the source
@@ -81,6 +102,15 @@ IDLE_JS = """(()=>{
         }
         const f=window.__ghostFrame;
         m[0]=f.scale; m[5]=f.scale; m[12]=f.x; m[13]=f.y;
+        // Parallax translation/dolly ride on the matrix ONLY — f is untouched,
+        // so persist()/steps/home-restore never absorb a viewer offset.
+        // (m[1]/m[4] shear slots are free if a keystone term is ever wanted.)
+        const pc=P.cfg;
+        if(pc&&P.b>0.01){
+          m[12]=f.x-P.x*pc.tg*P.b;
+          m[13]=f.y-P.y*pc.tg*pc.ty*P.b;
+          if(pc.dolly){const s=f.scale*(1+P.z*pc.dolly*P.b); m[0]=s; m[5]=s;}
+        }
       }
       if(md._dragManager){
         const talking=(md._lastLipSyncValue||0)>0.03;   // conversation in progress
@@ -93,6 +123,32 @@ IDLE_JS = """(()=>{
           const y=0.16*Math.sin(t*1.7)+0.06*Math.sin(t*0.5);  // subtler vertical bob
           md._dragManager.set(x,y);
         }
+      }
+      // Parallax rotation: wrap this model instance's update() once, so the
+      // parameter adds land AFTER motions/expressions/physics and BEFORE draw.
+      // Per-frame check (not a global flag) so a model switch re-wraps the new
+      // instance automatically. Cancels the dragManager's head/body drive
+      // (dx*30 etc. — the stock multipliers) and substitutes the counter-
+      // rotation; eyes are left on the viewer unless cfg.eyes is 0.
+      if(md.update&&!md.__ghostParWrap){
+        md.__ghostParWrap=true;
+        const orig=md.update.bind(md);
+        md.update=function(){
+          orig();
+          const P=window.__ghostPar; if(!P||!P.cfg||P.b<0.01) return;
+          const c=P.cfg, cm=md._model, dm=md._dragManager;
+          if(!cm) return;
+          const dx=dm?dm.getX():0, dy=dm?dm.getY():0;
+          const lim=c.maxd||25;
+          const yaw=Math.max(-lim,Math.min(lim,-P.x*c.rot));
+          const pit=Math.max(-lim,Math.min(lim,-P.y*c.rot*c.ry));
+          const add=(id,v)=>{try{cm.addParameterValueById(id,v*P.b);}catch(e){}};
+          add(md._idParamAngleX, yaw-dx*30);
+          add(md._idParamAngleY, pit-dy*30);
+          add(md._idParamAngleZ, yaw*pit*-0.033-dx*dy*-30);
+          add(md._idParamBodyAngleX, yaw*c.body-dx*10);
+          if(!c.eyes){add(md._idParamEyeBallX,-dx);add(md._idParamEyeBallY,-dy);}
+        };
       }
     }
     window.__ghostIdleRAF=requestAnimationFrame(tick);

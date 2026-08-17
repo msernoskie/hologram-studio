@@ -206,6 +206,45 @@
       = restore home, the blind panic button).</div>
   </section>
 
+  <!-- ============ HEAD-COUPLED 3D (PARALLAX) ============ -->
+  <section class="wide">
+    <h2>Head-coupled 3D</h2>
+    <div class="row2">
+      <button id="parallaxToggle"></button>
+      <span class="hint">Portalgraph mode: the camera tracks where YOU are and
+        counter-rotates the model, so she reads as a fixed 3D object inside the
+        cube. Her eyes keep following you unless you uncheck it.</span>
+    </div>
+    <div class="row2" style="gap:16px">
+      <label>rotation <input type="number" id="pxRot" min="0" max="3" step="0.1"
+        style="width:70px"></label>
+      <label>translation <input type="number" id="pxTrans" min="0" max="0.05" step="0.001"
+        style="width:80px"></label>
+      <label>smoothing <input type="number" id="pxEase" min="0.05" max="0.6" step="0.05"
+        style="width:70px"></label>
+      <label>max° <input type="number" id="pxMaxDeg" min="5" max="45" step="1"
+        style="width:70px"></label>
+      <label>face width <input type="number" id="pxRefW" min="0.05" max="0.5" step="0.01"
+        style="width:75px"></label>
+    </div>
+    <div class="row2" style="gap:16px">
+      <label><input type="checkbox" id="pxEyes"> eyes keep following you</label>
+      <label><input type="checkbox" id="pxDolly"> distance dolly</label>
+      <label>dolly gain <input type="number" id="pxDollyGain" min="0" max="0.5" step="0.05"
+        style="width:70px"></label>
+      <label><input type="checkbox" id="pxInvX"> invert X</label>
+      <label><input type="checkbox" id="pxInvY"> invert Y</label>
+      <button id="saveParallax" class="primary">Save tuning</button>
+    </div>
+    <div class="hint">Applies <b>live</b>. Calibrate: step to your right — you should
+      see more of her right cheek (she stays put; you move around her). If she turns
+      further <i>toward</i> you instead, flip <b>invert X</b>. Rise/crouch checks
+      <b>invert Y</b>. <b>face width</b> is your face's share of the camera frame at
+      your normal spot (the sidecar's debug log prints <code>w=…</code>) — it anchors
+      the distance dolly. Raise <b>rotation</b> until it looks puppet-like, then back
+      off. <b>smoothing</b> up if laggy, down if jittery.</div>
+  </section>
+
   <!-- ============ AI BACKEND ============ -->
   <section class="wide">
     <h2>AI backend</h2>
@@ -601,7 +640,39 @@ $("saveGestures").onclick = async () => {
   refreshGestures();
 };
 
-refresh(); refreshAI(); refreshGestures();
+// ---------- head-coupled 3D (parallax) ----------
+let PX = {};
+async function refreshParallax() {
+  PX = await api("/api/parallax");
+  $("parallaxToggle").textContent = PX.on
+    ? "Head-coupled 3D: ON — click to disable"
+    : "Head-coupled 3D: OFF — click to enable";
+  const c = PX.conf;
+  $("pxRot").value = c.rot_gain;       $("pxTrans").value = c.trans_gain;
+  $("pxEase").value = c.ease;          $("pxMaxDeg").value = c.max_deg;
+  $("pxRefW").value = c.ref_face_width;
+  $("pxEyes").checked = c.eye_contact; $("pxDolly").checked = c.dolly;
+  $("pxDollyGain").value = c.dolly_gain;
+  $("pxInvX").checked = c.invert_x;    $("pxInvY").checked = c.invert_y;
+}
+$("parallaxToggle").onclick = async () => {
+  await api("/api/parallax", {on: !PX.on}); refreshParallax();
+};
+$("saveParallax").onclick = async () => {
+  const r = await api("/api/parallax", {conf: {
+    ...PX.conf,
+    rot_gain: +$("pxRot").value, trans_gain: +$("pxTrans").value,
+    ease: +$("pxEase").value, max_deg: +$("pxMaxDeg").value,
+    ref_face_width: +$("pxRefW").value,
+    eye_contact: $("pxEyes").checked, dolly: $("pxDolly").checked,
+    dolly_gain: +$("pxDollyGain").value,
+    invert_x: $("pxInvX").checked, invert_y: $("pxInvY").checked,
+  }});
+  toast(r.ok ? "parallax tuning saved — live now" : (r.error||"failed"), r.ok);
+  refreshParallax();
+};
+
+refresh(); refreshAI(); refreshGestures(); refreshParallax();
 api("/api/frame").then(showFrame);
 // periodic refresh keeps "playing"/model state current — but NEVER while the
 // user is typing or picking from a dropdown: a re-render would steal focus

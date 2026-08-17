@@ -42,6 +42,70 @@ Two fingers up overrides it: while you hold them, she watches your hand instead.
 
 ---
 
+## Head-coupled 3D (parallax)
+
+Portalgraph mode, on by default: the same face tracking that drives her gaze also
+drives a head-coupled perspective effect. As you move around the cube she
+counter-rotates and shifts opposite to you — like looking at a 3DS or a Johnny Lee
+Wii head-tracking demo, she reads as a fixed 3D object inside the glass instead of
+a picture on it. Her **eyes keep following you** the whole time (that is a setting,
+`eye_contact`, on by default): the head holds the 3D pose while the eyes do the
+tracking, which is both the illusion and the eye contact at once.
+
+How it works: the sidecar publishes your face's angle off the camera axis (in
+degrees, eye-midpoint anchored) plus a distance estimate from face width, ~14x/s
+over the same CDP eval as the gaze. The kiosk page eases that at 60fps and applies
+
+- **counter-rotation** — head/body angle parameters driven opposite to your
+  position, replacing the normal look-at-you head turn
+- **translation** — the model matrix shifts opposite to you (screen units, so it
+  feels the same at any zoom); never written into the persisted framing, so
+  nudge/zoom/home and framing.json are completely unaffected
+- **dolly** (optional, off by default) — she scales slightly with your distance
+
+Toggle and tune it from the web UI's **Head-coupled 3D** panel, or by hand:
+
+```bash
+touch ~/OpenGhost/scripts/.parallax_off   # off (applies within a second)
+rm ~/OpenGhost/scripts/.parallax_off      # on
+```
+
+Tuning lives in `scripts/parallax.json` (hot-reloaded, so edits apply live):
+
+| Field | Meaning |
+|---|---|
+| `rot_gain` | model degrees of counter-rotation per degree you move off-axis (0.9) |
+| `rot_y_scale` | vertical rotation as a fraction of horizontal (0.7) |
+| `body_scale` | body yaw as a fraction of head yaw (0.35) |
+| `max_deg` | clamp on the injected head angles (25) |
+| `trans_gain` | screen units of translation per viewer degree (0.004) |
+| `trans_y_scale` | vertical translation as a fraction of horizontal (0.6) |
+| `dolly`, `dolly_gain` | scale with your distance (off / 0.15) |
+| `ref_face_width` | your face's share of the camera frame at your normal spot (0.18) |
+| `eye_contact` | eyes stay on you while the head counter-rotates (true) |
+| `invert_x`, `invert_y` | flip the parallax direction only — gaze is unaffected |
+| `ease` | page-side smoothing; higher = snappier, lower = smoother (0.25) |
+
+**Calibrating (do this once, standing at the rig):**
+
+1. `gesture_ctl.sh debug` — the `[face]` lines print `w=0.xxx`; stand at your
+   normal spot and copy that into `ref_face_width`.
+2. Step ~30cm to your right. Correct: you see more of her **right cheek** — she
+   stays put while you move around her, eyes still on you. If she instead turns
+   her face further toward you (feels like a camera following you), flip
+   `invert_x`. Same test vertically (rise/crouch) for `invert_y`.
+3. Raise `rot_gain` until the motion looks puppet-like, then back off ~20%.
+   Then the same for `trans_gain`. Raise `ease` if she lags behind you, lower it
+   if she jitters (face detection is ~5Hz; the ease is what smooths it).
+
+Interactions: the two-finger gaze gesture pauses parallax while held (it fades
+out over ~0.5s and fades back). Hand nudge/zoom and the panic-button home all
+work unchanged — parallax rides on top and never touches the saved framing. It
+stays active while she is talking; it never touches the mouth, so lip-sync is
+unaffected. When nobody is in frame everything eases back to the stock idle sway.
+
+---
+
 ## The gestures
 
 One rule: **count the fingers you hold up.** Which fingers doesn't matter. Every action is a
