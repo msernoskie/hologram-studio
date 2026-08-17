@@ -33,6 +33,8 @@ frame rate, the single action that won this frame, and where your hand is.
 
 She watches the **nearest face** in the camera's view — head, eyes and body turn to follow, with
 the hair physics trailing behind. When nobody is in frame she falls back to the idle figure-8 sway.
+Every few seconds she also does a quick little double head-bob (paused while she's talking) — an
+idle liveliness tic, not a reaction to anything.
 
 Nearest = largest face in frame, which at a desk is reliably you. Picking *you specifically* out of
 several people would need a face-embedding model plus an enrollment step — possible, but a

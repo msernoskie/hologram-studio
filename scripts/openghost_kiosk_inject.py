@@ -56,6 +56,12 @@ SETUP_JS = """(()=>{
 # and accessories follow) -> a soft alive bob. Works for models with no baked
 # motions (e.g. goth_mofu). Pauses while _lastLipSyncValue shows she's speaking,
 # so it never fights lip-sync during a conversation. Idempotent (cancels prior loop).
+#
+# Plus an idle HOP: two quick head-bobs (a pitch nod, not a position move)
+# every few seconds whenever she isn't talking — including while she's
+# gaze-following a face, which is when you're actually watching her. It rides
+# as an offset on the dragManager pitch target, so the rig's own easing turns
+# the sharp |sin| humps into a soft, alive double-bob.
 IDLE_JS = """(()=>{
   if(typeof getLive2DManager!=="function") return "no-manager";
   if(window.__ghostIdleRAF) cancelAnimationFrame(window.__ghostIdleRAF);
@@ -84,14 +90,20 @@ IDLE_JS = """(()=>{
       }
       if(md._dragManager){
         const talking=(md._lastLipSyncValue||0)>0.03;   // conversation in progress
+        // Idle hop: two quick head-bobs every ~6s — a PITCH offset on the
+        // look-target (head tilts up/down; her position never moves). Rides on
+        // top of gaze-following too, and goes quiet while she's talking. The
+        // dragManager's velocity-limited easing softens the |sin| humps.
+        const hp=((now-t0)/1000)%6;              // 2 bobs in 0.7s, rest ~5.3s
+        const bob=(!talking&&hp<0.7)?0.35*Math.abs(Math.sin(hp/0.7*Math.PI*2)):0;
         const gz=window.__ghostGaze;                    // fresh = a hand is on screen
         if(gz&&now-gz.t<600){
-          md._dragManager.set(gz.x,gz.y);               // look at the hand, beats idle
+          md._dragManager.set(gz.x,Math.min(1,gz.y+bob)); // look at it, beats idle
         } else if(!talking){
           const t=(now-t0)/1000;
           const x=0.38*Math.sin(t*0.9)+0.10*Math.sin(t*0.33); // slow horizontal sway
           const y=0.16*Math.sin(t*1.7)+0.06*Math.sin(t*0.5);  // subtler vertical bob
-          md._dragManager.set(x,y);
+          md._dragManager.set(x,Math.min(1,y+bob));
         }
       }
     }
