@@ -32,6 +32,10 @@ CALIB_DEFAULTS = {
     "ease": 0.12,             # per-frame easing toward the tracked eye
     "depth_mm": 40,           # how far behind the screen plane the model stands
     "model_fit": 0.85,        # model height as a fraction of the screen height
+    "par_gain": 0.35,         # how much the camera shifts with the viewer (0..1;
+                              #   1 = strict window realism = lots of sliding)
+    "rot_gain": 0.7,          # model turntable yaw per viewer angle (negative
+                              #   flips the rotation sense)
 }
 
 
@@ -52,7 +56,8 @@ def clean_calib(body):
     num = {"screen_mm": (20, 500), "cam_hfov_deg": (20, 160),
            "cam_vfov_deg": (20, 160), "ref_face_w": (0.02, 0.9),
            "ref_dist_mm": (100, 3000), "ease": (0.02, 1.0),
-           "depth_mm": (-100, 300), "model_fit": (0.1, 2.0)}
+           "depth_mm": (-100, 300), "model_fit": (0.1, 2.0),
+           "par_gain": (0.0, 1.0), "rot_gain": (-3.0, 3.0)}
     for k, (lo, hi) in num.items():
         if k in body:
             out[k] = max(lo, min(hi, float(body[k])))

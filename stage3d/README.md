@@ -48,6 +48,8 @@ of the same avatars are distributed as VRM, and VRoid Studio exports VRM.
 | `ease` | smoothing (lower = smoother/laggier) |
 | `depth_mm` | how far behind the window plane the model stands |
 | `model_fit` | model height as a fraction of the screen |
+| `par_gain` | how much the camera shifts with you (0..1). 1 = strict window realism, which mostly *slides* the scene; low values keep just a hint of parallax |
+| `rot_gain` | turntable: how much the **model** yaws opposite your viewing angle (the room never rotates — it stays the fixed window). Negative flips the sense |
 
 Edit via `curl -X POST localhost:8801/api/calib -d '{"invert_x": true}'` or the
 file directly. Debug overlay: `http://<pi>:8801/?debug=1` (or press `d` on a

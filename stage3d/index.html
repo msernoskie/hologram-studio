@@ -42,6 +42,7 @@ let C = {
   screen_mm: 72, cam_hfov_deg: 66, cam_vfov_deg: 41,
   cam_offset_mm: { x: 0, y: 40 }, ref_face_w: 0.18, ref_dist_mm: 500,
   invert_x: false, invert_y: false, ease: 0.12, depth_mm: 40, model_fit: 0.85,
+  par_gain: 0.35, rot_gain: 0.7,
 };
 async function loadCalib() {
   try { Object.assign(C, await (await fetch('/api/calib')).json()); } catch (e) {}
@@ -194,19 +195,27 @@ function tick() {
 
   // Off-axis (generalized) perspective: camera AT the eye, frustum skewed so
   // the screen rectangle (±S/2 at z=0) stays exactly on the near-plane window.
+  // par_gain scales the lateral camera shift down — full window realism slides
+  // the scene more than it appears to rotate, and the turntable yaw below is
+  // what actually sells "she's a solid object" on a screen this small.
   const n = 10, far = 5000, W = S(), H = S(), s = n / Math.max(eye.z, 50);
-  camera.position.set(eye.x, eye.y, eye.z);
+  const px = eye.x * C.par_gain, py = eye.y * C.par_gain;
+  camera.position.set(px, py, eye.z);
   camera.rotation.set(0, 0, 0);
   camera.updateMatrixWorld(true);
   camera.projectionMatrix.makePerspective(
-    (-W / 2 - eye.x) * s, (W / 2 - eye.x) * s,
-    ( H / 2 - eye.y) * s, (-H / 2 - eye.y) * s, n, far);
+    (-W / 2 - px) * s, (W / 2 - px) * s,
+    ( H / 2 - py) * s, (-H / 2 - py) * s, n, far);
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
 
-  if (placeholder.visible) placeholder.rotation.y += dt * 0.4;
-  if (modelRoot && !vrm) modelRoot.rotation.y = Math.sin(clock.elapsedTime * 0.3) * 0.05;
+  // Turntable: yaw the model (never the room — that stays the fixed window)
+  // opposite the viewer's angle, so stepping sideways shows her side.
+  const yaw = -Math.atan2(eye.x, eye.z + C.depth_mm) * C.rot_gain;
+
+  if (placeholder.visible) placeholder.rotation.y = yaw + clock.elapsedTime * 0.4;
+  if (modelRoot && !vrm) modelRoot.rotation.y = yaw + Math.sin(clock.elapsedTime * 0.3) * 0.05;
   if (vrm) {
-    vrm.scene.rotation.y = Math.sin(clock.elapsedTime * 0.4) * 0.04;  // idle sway
+    vrm.scene.rotation.y = yaw + Math.sin(clock.elapsedTime * 0.4) * 0.04;  // idle sway
     const em = vrm.expressionManager;
     if (em) {                                                          // auto-blink
       blinkAt -= dt;
