@@ -1,0 +1,23 @@
+# OpenGhost — hologram studio web UI as a systemd user service (:8800).
+# Always-on alongside the kiosk: starts at boot with the user session and
+# restarts automatically if it ever dies.
+#
+# Install (once):
+#   mkdir -p ~/.config/systemd/user
+#   cp ~/OpenGhost/scripts/openghost-webui.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now openghost-webui
+# Logs: journalctl --user -u openghost-webui
+# webui.sh start/stop/status use this service automatically when installed.
+
+[Unit]
+Description=OpenGhost hologram studio web UI (:8800)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 -u %h/OpenGhost/webui/server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
