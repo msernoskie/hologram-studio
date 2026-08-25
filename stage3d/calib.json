@@ -2,12 +2,15 @@
   "screen_mm": 72.0,
   "cam_hfov_deg": 66.0,
   "cam_vfov_deg": 41.0,
-  "cam_offset_mm": {"x": 0, "y": 40},
+  "cam_offset_mm": {
+    "x": 0,
+    "y": 40
+  },
   "ref_face_w": 0.18,
   "ref_dist_mm": 500,
-  "invert_x": false,
+  "invert_x": true,
   "invert_y": false,
-  "ease": 0.12,
+  "ease": 0.045,
   "depth_mm": 40,
   "model_fit": 0.85
 }
