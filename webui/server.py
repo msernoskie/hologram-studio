@@ -25,6 +25,7 @@ import os
 import subprocess
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -35,6 +36,7 @@ SCRIPTS = os.path.join(HOME, "OpenGhost", "scripts")
 LIBRARY = os.path.join(HERE, "library.json")
 GESTURE_MAP = os.path.join(SCRIPTS, "gesture_map.json")
 HANDS_OFF_FLAG = os.path.join(SCRIPTS, ".hands_off")
+STAGE_SH = os.path.join(HOME, "OpenGhost", "stage3d", "stage.sh")
 IDLE_JSON = os.path.join(SCRIPTS, "idle.json")
 # Idle part-motions — parts must match the PARTS map in IDLE_JS
 # (openghost_kiosk_inject.py). idle = master toggle (figure-8 sway + motions).
@@ -194,6 +196,17 @@ def run_script(*argv, timeout=120):
         return p.returncode == 0, (p.stdout + p.stderr).strip()
     except Exception as e:
         return False, str(e)
+
+
+def stage_on():
+    """True when the kiosk is showing the 3D stage tab (stage3d, :8801)."""
+    try:
+        tabs = json.load(urllib.request.urlopen("http://localhost:9222/json",
+                                                timeout=3))
+        return any(t.get("type") == "page" and "8801" in t.get("url", "")
+                   for t in tabs)
+    except Exception:
+        return False
 
 
 def fire_emote(names):
@@ -419,6 +432,13 @@ class Handler(BaseHTTPRequestHandler):
                 "emotion_map": (entry or {}).get("emotionMap", {}),
                 "playing": _player["now"],
             })
+            return
+
+        if path == "/api/stage":
+            # Is the 3D stage (stage3d spinoff) on the glass? True when the
+            # kiosk has a tab on the stage server (:8801) — stage.sh show/hide
+            # opens/closes that tab, the Live2D page keeps running either way.
+            self._json({"on": stage_on()})
             return
 
         if path == "/api/export":
@@ -716,6 +736,15 @@ class Handler(BaseHTTPRequestHandler):
                 os.replace(tmp, GESTURE_MAP)
             self._json({"ok": True, "map": out,
                         "note": "applies live — the sidecar reloads on change"})
+            return
+
+        if path == "/api/stage":
+            ok, out = run_script(STAGE_SH, "show" if body.get("on") else "hide",
+                                 timeout=60)
+            resp = {"ok": ok, "on": stage_on()}
+            if not ok:
+                resp["error"] = out[-300:]
+            self._json(resp)
             return
 
         if path == "/api/hands":

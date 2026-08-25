@@ -94,6 +94,7 @@
     <button class="tab" data-tab="chat">Chat</button>
     <button class="tab" data-tab="motions">Idle motions</button>
   </nav>
+  <button id="stageToggle" class="small" style="margin-left:10px"></button>
   <span class="sub" id="activeName"></span>
   <span id="toast"></span>
 </header>
@@ -677,6 +678,26 @@ $("saveGestures").onclick = async () => {
   refreshGestures();
 };
 
+// ---------- display mode: Live2D avatar <-> 3D stage ----------
+let stageOn = false;
+async function refreshStage() {
+  try {
+    stageOn = (await api("/api/stage")).on;
+    $("stageToggle").textContent = stageOn
+      ? "◨ On the glass: 3D stage — switch to Live2D"
+      : "◨ On the glass: Live2D — switch to 3D stage";
+  } catch (e) {}
+}
+$("stageToggle").onclick = async () => {
+  $("stageToggle").classList.add("busy");
+  toast(stageOn ? "switching to the Live2D avatar…" : "switching to the 3D stage…", true);
+  const r = await api("/api/stage", {on: !stageOn});
+  $("stageToggle").classList.remove("busy");
+  toast(r.ok ? (r.on ? "3D stage on the glass" : "Live2D avatar on the glass")
+             : (r.error || "switch failed"), r.ok);
+  refreshStage();
+};
+
 // ---------- tabs ----------
 let activeTab = "studio";
 const TAB_OF = {motionsPanel: "motions", chatPanel: "chat"};
@@ -823,7 +844,7 @@ $("saveIdle").onclick = async () => {
   refreshIdle();
 };
 
-refresh(); refreshAI(); refreshGestures(); refreshIdle();
+refresh(); refreshAI(); refreshGestures(); refreshIdle(); refreshStage();
 api("/api/frame").then(showFrame);
 // periodic refresh keeps "playing"/model state current — but NEVER while the
 // user is typing or picking from a dropdown: a re-render would steal focus
