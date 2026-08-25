@@ -8,10 +8,14 @@ from websocket import create_connection  # websocket-client (already installed)
 DBG = "http://localhost:9222"
 
 def page_ws():
-    targets = json.load(urllib.request.urlopen(DBG + "/json"))
-    for t in targets:
-        if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
+    pages = [t for t in json.load(urllib.request.urlopen(DBG + "/json"))
+             if t.get("type") == "page" and t.get("webSocketDebuggerUrl")]
+    # Prefer the OLV kiosk page — the stage3d spinoff may own a second tab
+    for t in pages:
+        if "12393" in t.get("url", ""):
             return t["webSocketDebuggerUrl"]
+    if pages:
+        return pages[0]["webSocketDebuggerUrl"]
     raise SystemExit("no page target found")
 
 def main():

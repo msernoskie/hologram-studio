@@ -274,10 +274,13 @@ IDLE_JS = """(()=>{
 
 
 def page_ws():
-    for t in json.load(urllib.request.urlopen(DBG + "/json")):
-        if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
+    pages = [t for t in json.load(urllib.request.urlopen(DBG + "/json"))
+             if t.get("type") == "page" and t.get("webSocketDebuggerUrl")]
+    # Prefer the OLV kiosk page — the stage3d spinoff may own a second tab
+    for t in pages:
+        if "12393" in t.get("url", ""):
             return t["webSocketDebuggerUrl"]
-    return None
+    return pages[0]["webSocketDebuggerUrl"] if pages else None
 
 
 def evaluate(ws, js):

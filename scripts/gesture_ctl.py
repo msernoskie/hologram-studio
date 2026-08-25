@@ -59,6 +59,7 @@ HANDS_OFF_FLAG = os.path.join(HERE, ".hands_off")   # exists = hand gestures dis
                                                     # (toggled by gesture_ctl.sh hands on|off;
                                                     # face tracking is unaffected)
 PROACTIVE_FILE = os.path.join(HERE, "proactive.json")
+FACE_BRIDGE = "/dev/shm/openghost_face.json"    # tmpfs — published for stage3d
 DBG = "http://localhost:9222"
 
 # ---- tuning knobs -----------------------------------------------------------
@@ -102,10 +103,14 @@ class CDP:
         self._id = 0
 
     def _page_ws(self):
-        for t in json.load(urllib.request.urlopen(DBG + "/json", timeout=3)):
-            if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
+        pages = [t for t in json.load(urllib.request.urlopen(DBG + "/json", timeout=3))
+                 if t.get("type") == "page" and t.get("webSocketDebuggerUrl")]
+        # Prefer the OLV kiosk page — the stage3d spinoff may own a second tab,
+        # and gaze/chat injection must never land there.
+        for t in pages:
+            if "12393" in t.get("url", ""):
                 return t["webSocketDebuggerUrl"]
-        return None
+        return pages[0]["webSocketDebuggerUrl"] if pages else None
 
     def connect(self):
         url = self._page_ws()
@@ -409,6 +414,29 @@ def look(cdp, nx, ny):
     cdp.eval("window.__ghostGaze={x:%f,y:%f,t:performance.now()}" % (gx, gy))
 
 
+def publish_face(face, args):
+    """Publish the tracked face to tmpfs (~5Hz, no SD wear) so other local
+    consumers — the stage3d head-coupled 3D spinoff — can read it without
+    touching the camera or CDP. Coordinates are mirror-corrected exactly like
+    the gaze (x=0..1 left→right from the VIEWER's side, y=0..1 bottom→top);
+    w is the normalised face width (distance proxy)."""
+    d = {"present": False, "t": time.time()}
+    if face:
+        cx, cy = (face[0] + face[2]) / 2, (face[1] + face[3]) / 2
+        d = {"present": True,
+             "x": round((1.0 - cx) if args.invert_x else cx, 4),
+             "y": round(cy if args.invert_y else (1.0 - cy), 4),
+             "w": round(face[2] - face[0], 4),
+             "t": time.time()}
+    try:
+        tmp = FACE_BRIDGE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(d, f)
+        os.replace(tmp, FACE_BRIDGE)
+    except Exception:
+        pass
+
+
 def nearest_face(detector, rgb, ts_ms):
     """Box of the LARGEST face in view as raw normalised (x0, y0, x1, y1), or None.
 
@@ -582,6 +610,8 @@ def main():
                     face, face_at = box, now
             if face and now - face_at > FACE_TTL:
                 face = None
+            if face_det and frames % FACE_EVERY == 0:
+                publish_face(face, args)
 
             # ---- proactive greeting ----
             # Fire once when the face returns after a long absence and stays

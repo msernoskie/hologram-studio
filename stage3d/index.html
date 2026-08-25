@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>stage3d — head-coupled 3D</title>
+<style>
+  html, body { margin:0; padding:0; width:100%; height:100%;
+               background:#000; overflow:hidden; cursor:none; }
+  canvas { display:block; }
+  #msg { position:fixed; left:0; right:0; top:42%; color:#0fc;
+         font:13px monospace; text-align:center; white-space:pre-wrap; }
+  #dbg { position:fixed; left:6px; top:6px; color:#0f0;
+         font:11px monospace; white-space:pre; display:none; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "./vendor/three.module.js",
+    "three/addons/": "./vendor/addons/",
+    "@pixiv/three-vrm": "./vendor/three-vrm.module.min.js"
+} }
+</script>
+</head>
+<body>
+<div id="msg"></div>
+<div id="dbg"></div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+
+// Head-coupled perspective ("portalgraph"): the virtual camera sits wherever
+// the Pi camera says the viewer's face is, and an OFF-AXIS frustum keeps the
+// physical screen as the fixed window plane (z=0). Near objects then shift
+// more than far ones as the viewer moves — real motion parallax, the depth
+// cue the Live2D avatar can never produce. World units are MILLIMETRES.
+
+const qs  = new URLSearchParams(location.search);
+const msg = t => { document.getElementById('msg').textContent = t || ''; };
+
+// ---- calibration (hot-reloaded so webui/curl edits apply live) -------------
+let C = {
+  screen_mm: 72, cam_hfov_deg: 66, cam_vfov_deg: 41,
+  cam_offset_mm: { x: 0, y: 40 }, ref_face_w: 0.18, ref_dist_mm: 500,
+  invert_x: false, invert_y: false, ease: 0.12, depth_mm: 40, model_fit: 0.85,
+};
+async function loadCalib() {
+  try { Object.assign(C, await (await fetch('/api/calib')).json()); } catch (e) {}
+}
+await loadCalib();
+setInterval(loadCalib, 2000);
+
+// ---- renderer / scene ------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(1);            // 720x720 native — no supersampling on a Pi
+document.body.appendChild(renderer.domElement);
+addEventListener('resize', () => renderer.setSize(innerWidth, innerHeight));
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);   // Pepper's Ghost: black = invisible
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const key = new THREE.DirectionalLight(0xffffff, 1.8);
+key.position.set(40, 90, 130);
+scene.add(key);
+
+// ---- reference geometry: a "room" whose front face IS the screen ----------
+// The wireframe window frame + staggered-depth cubes make the parallax
+// readable even before any avatar is dropped in.
+const S = () => C.screen_mm;
+const ref = new THREE.Group();
+scene.add(ref);
+function buildRef() {
+  ref.clear();
+  const W = S();
+  const room = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(W, W, W)),
+    new THREE.LineBasicMaterial({ color: 0x00ffcc }));
+  room.position.z = -W / 2;                       // front face at z=0
+  ref.add(room);
+  const grid = new THREE.GridHelper(W, 8, 0x445566, 0x223344);
+  grid.position.set(0, -W / 2, -W / 2);
+  ref.add(grid);
+  const cube = (color, x, y, z, s) => {
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(s, s, s),
+      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.35 }));
+    m.position.set(x, y, z);
+    ref.add(m);
+  };
+  cube(0xff3366,  W * 0.30,  W * 0.25, -W * 0.15, W * 0.07);
+  cube(0x33aaff, -W * 0.28, -W * 0.10, -W * 0.55, W * 0.09);
+  cube(0xffcc00,  W * 0.10, -W * 0.30, -W * 0.85, W * 0.11);
+}
+buildRef();
+
+const placeholder = new THREE.Mesh(
+  new THREE.TorusKnotGeometry(S() * 0.16, S() * 0.05, 120, 16),
+  new THREE.MeshStandardMaterial({ color: 0x9966ff, emissive: 0x331177, roughness: 0.3 }));
+placeholder.position.z = -S() * 0.5;
+scene.add(placeholder);
+
+// ---- avatar: first *.vrm/*.glb in stage3d/models/ (or ?model=name) ---------
+const eyeObj = new THREE.Object3D();    // the viewer, in scene space — VRM
+scene.add(eyeObj);                      // eyes are told to look at this
+let vrm = null, modelRoot = null;
+const loader = new GLTFLoader();
+loader.register(p => new VRMLoaderPlugin(p));
+async function loadModel() {
+  let list = [];
+  try { list = await (await fetch('/api/models')).json(); } catch (e) {}
+  const want = qs.get('model');
+  const pick = want ? list.find(n => n.includes(want)) : list[0];
+  if (!pick) {
+    msg('stage3d test scene — drop a .vrm or .glb into stage3d/models/');
+    setTimeout(() => msg(''), 8000);
+    return;
+  }
+  msg('loading ' + pick + ' …');
+  try {
+    const gltf = await loader.loadAsync('/models/' + pick);
+    vrm = gltf.userData.vrm || null;
+    if (vrm) {
+      VRMUtils.removeUnnecessaryVertices?.(gltf.scene);
+      VRMUtils.combineSkeletons?.(gltf.scene);
+      VRMUtils.rotateVRM0(vrm);                   // VRM0 models face -Z; fix that
+      if (vrm.lookAt) vrm.lookAt.target = eyeObj; // eyes follow the tracked face
+      // VRM rest pose is a T-pose — relax the arms to the sides
+      vrm.humanoid?.getNormalizedBoneNode('leftUpperArm')?.rotation.set(0, 0, -1.15);
+      vrm.humanoid?.getNormalizedBoneNode('rightUpperArm')?.rotation.set(0, 0, 1.15);
+    }
+    modelRoot = vrm ? vrm.scene : gltf.scene;
+    // figurine-fit: model_fit of the screen height, feet on the floor grid,
+    // standing depth_mm behind the window plane
+    const bb = new THREE.Box3().setFromObject(modelRoot);
+    const size = bb.getSize(new THREE.Vector3());
+    modelRoot.scale.setScalar(S() * C.model_fit / Math.max(size.y, 1e-6));
+    bb.setFromObject(modelRoot);
+    const ctr = bb.getCenter(new THREE.Vector3());
+    modelRoot.position.x -= ctr.x;
+    modelRoot.position.y -= bb.min.y + S() / 2;
+    modelRoot.position.z -= ctr.z + C.depth_mm;
+    scene.add(modelRoot);
+    placeholder.visible = false;
+    msg('');
+  } catch (e) {
+    msg('model load failed:\n' + (e.message || e));
+  }
+}
+loadModel();
+
+// ---- viewer position from the sidecar's face bridge ------------------------
+let face = { present: false, t: 0 };
+setInterval(async () => {
+  try { face = await (await fetch('/api/face', { cache: 'no-store' })).json(); }
+  catch (e) {}
+}, 66);
+
+const eye = { x: 0, y: 0, z: C.ref_dist_mm };   // eased viewer position (mm)
+window.__forceEye = null;                       // calibration hook: {x,y,z} in mm
+function eyeTarget() {
+  if (window.__forceEye) return window.__forceEye;
+  const fresh = face.present && (Date.now() / 1000 - face.t) < 1.0;
+  if (!fresh) return { x: 0, y: 0, z: C.ref_dist_mm };   // nobody there — head-on
+  const d2r = Math.PI / 180;
+  const dist = Math.min(2000, Math.max(200,
+      C.ref_dist_mm * C.ref_face_w / Math.max(face.w, 0.02)));
+  const ax = (face.x - 0.5) * C.cam_hfov_deg * d2r * (C.invert_x ? -1 : 1);
+  const ay = (face.y - 0.5) * C.cam_vfov_deg * d2r * (C.invert_y ? -1 : 1);
+  return { x: Math.tan(ax) * dist + (C.cam_offset_mm.x || 0),
+           y: Math.tan(ay) * dist + (C.cam_offset_mm.y || 0),
+           z: dist };
+}
+
+// ---- debug overlay (?debug=1 or press "d") ---------------------------------
+const dbg = document.getElementById('dbg');
+let dbgOn = qs.get('debug') === '1';
+dbg.style.display = dbgOn ? 'block' : 'none';
+addEventListener('keydown', e => {
+  if (e.key === 'd') { dbgOn = !dbgOn; dbg.style.display = dbgOn ? 'block' : 'none'; }
+});
+
+// ---- render loop -----------------------------------------------------------
+const clock = new THREE.Clock();
+let blinkAt = 2, frames = 0, fps = 0, fpsAt = 0;
+function tick() {
+  requestAnimationFrame(tick);
+  const dt = Math.min(clock.getDelta(), 0.1);
+  const tgt = eyeTarget();
+  const k = Math.min(1, C.ease * 60 * dt);
+  eye.x += (tgt.x - eye.x) * k;
+  eye.y += (tgt.y - eye.y) * k;
+  eye.z += (tgt.z - eye.z) * k;
+
+  // Off-axis (generalized) perspective: camera AT the eye, frustum skewed so
+  // the screen rectangle (±S/2 at z=0) stays exactly on the near-plane window.
+  const n = 10, far = 5000, W = S(), H = S(), s = n / Math.max(eye.z, 50);
+  camera.position.set(eye.x, eye.y, eye.z);
+  camera.rotation.set(0, 0, 0);
+  camera.updateMatrixWorld(true);
+  camera.projectionMatrix.makePerspective(
+    (-W / 2 - eye.x) * s, (W / 2 - eye.x) * s,
+    ( H / 2 - eye.y) * s, (-H / 2 - eye.y) * s, n, far);
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+
+  if (placeholder.visible) placeholder.rotation.y += dt * 0.4;
+  if (modelRoot && !vrm) modelRoot.rotation.y = Math.sin(clock.elapsedTime * 0.3) * 0.05;
+  if (vrm) {
+    vrm.scene.rotation.y = Math.sin(clock.elapsedTime * 0.4) * 0.04;  // idle sway
+    const em = vrm.expressionManager;
+    if (em) {                                                          // auto-blink
+      blinkAt -= dt;
+      em.setValue('blink', blinkAt < 0 ? Math.max(0, 1 - Math.abs(blinkAt) / 0.08) : 0);
+      if (blinkAt < -0.16) blinkAt = 1.5 + Math.random() * 4;
+    }
+    eyeObj.position.set(eye.x, eye.y, eye.z);
+    vrm.update(dt);
+  }
+  renderer.render(scene, camera);
+
+  frames++;
+  if (dbgOn && clock.elapsedTime - fpsAt > 0.5) {
+    fps = frames / (clock.elapsedTime - fpsAt); frames = 0; fpsAt = clock.elapsedTime;
+    dbg.textContent =
+      `fps  ${fps.toFixed(1)}\n` +
+      `face ${face.present ? `x=${face.x?.toFixed(2)} y=${face.y?.toFixed(2)} w=${face.w?.toFixed(3)}` : 'absent'}\n` +
+      `eye  x=${eye.x.toFixed(0)} y=${eye.y.toFixed(0)} z=${eye.z.toFixed(0)} mm` +
+      (window.__forceEye ? '  (FORCED)' : '');
+  }
+}
+const camera = new THREE.PerspectiveCamera();   // projection replaced every frame
+tick();
+</script>
+</body>
+</html>
